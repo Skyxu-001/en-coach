@@ -54,7 +54,9 @@ ENDPOINT = BASE_URL + "/chat/completions"
 # A null value removes a field: {"temperature": null}. See the README table.
 EXTRA_BODY_ENV = "EN_COACH_EXTRA_BODY"
 
-DATA_DIR = Path(os.environ.get("EN_COACH_DATA_DIR") or (Path.home() / ".claude" / "english"))
+# Same default as install.py and statusline-tip.py: follow CLAUDE_CONFIG_DIR.
+DATA_DIR = Path(os.environ.get("EN_COACH_DATA_DIR")
+                or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "english")
 ERRORS_FILE = DATA_DIR / "errors.jsonl"
 
 KINDS = {"verb-form", "countability", "article",

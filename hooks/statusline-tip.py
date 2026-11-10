@@ -21,7 +21,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("EN_COACH_DATA_DIR") or (Path.home() / ".claude" / "english"))
+# Same default as install.py and en-coach.py: follow CLAUDE_CONFIG_DIR.
+DATA_DIR = Path(os.environ.get("EN_COACH_DATA_DIR")
+                or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser() / "english")
 CHAINED_FILE = Path(__file__).resolve().parent / "chained-statusline.json"
 CHAINED_TIMEOUT_SECONDS = 4
 

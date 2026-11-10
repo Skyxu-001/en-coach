@@ -824,6 +824,22 @@ class Contract(unittest.TestCase):
                                capture_output=True, env=env)
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""))
 
+    def test_data_dir_follows_claude_config_dir(self):
+        """With CLAUDE_CONFIG_DIR set, the hook and the status line must use the
+        same data folder the installer reports: <config dir>/english. The hook
+        used to keep writing to ~/.claude/english, so tips never showed."""
+        with tempfile.TemporaryDirectory() as d:
+            env = {k: v for k, v in os.environ.items() if k != "EN_COACH_DATA_DIR"}
+            env["CLAUDE_CONFIG_DIR"] = d
+            code = ("import importlib.util,sys\n"
+                    "s=importlib.util.spec_from_file_location('x',sys.argv[1])\n"
+                    "m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\n"
+                    "sys.stdout.write(str(m.DATA_DIR))")
+            for script in (HOOK, STATUSLINE):
+                r = subprocess.run([sys.executable, "-B", "-c", code, str(script)],
+                                   capture_output=True, text=True, env=env)
+                self.assertEqual(pathlib.Path(r.stdout), pathlib.Path(d) / "english", script.name)
+
     def test_stdlib_only(self):
         """No third-party or same-directory imports. Decided by where each module
         is actually loaded from, so a local file shadowing a stdlib name is
