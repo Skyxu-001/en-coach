@@ -1,0 +1,52 @@
+# Third-party notices
+
+en-coach adapts ideas and patterns from the following MIT-licensed projects.
+
+## rapita/claude-grammar
+
+https://github.com/rapita/claude-grammar
+
+The overall shape: an async `UserPromptSubmit` hook with a recursion guard that
+writes its result to a file, which the status line then displays.
+
+```
+MIT License
+
+Copyright (c) 2026 Nazar Rapita
+```
+
+## zhangrui-vibe/claude-code-english-coach
+
+https://github.com/zhangrui-vibe/claude-code-english-coach
+
+The approach in `looks_injected()`: reading the end of the session transcript and
+checking `isMeta`, `isSidechain`, `userType` and `tool_result` to tell typed input
+from injected input, allowing the prompt through whenever unsure.
+
+```
+MIT License
+
+Copyright (c) 2026 auto-english-coach contributors
+```
+
+Both projects are distributed under the MIT License:
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
