@@ -32,7 +32,7 @@
 - **零额外操作**：不用开 App、不用敲命令、不用背卡片，照常写代码就行。
 - **中英夹杂随便写**：写 `how do I 撤销 the last commit`，它就教你 `撤销 → undo / revert / roll back`。想到什么写什么，这是设计意图，不是将就。
 - **不影响 Claude**：hook 不往对话里输出任何东西，提示只显示在状态栏，状态栏不会发给模型。装不装它，Claude 的回答都一样（同样的消息两边各跑一遍对照过）。
-- **便宜**：用 DeepSeek，每天约 40 条，一个月大约 **0.1 美元**。任何兼容 OpenAI 接口的模型都能用。
+- **便宜，也不绑定哪一家**：用 DeepSeek，每天约 40 条，一个月大约 **0.1 美元**。OpenAI、Gemini、Claude、通义千问、Kimi、智谱也都实测过，还能跑本地模型（见[测过的模型](#测过的模型)）。
 
 ## 教什么
 
@@ -47,7 +47,7 @@
 
 ## 安装
 
-需要 Python 3.9+，和一个兼容 OpenAI 接口的模型 API key（默认 DeepSeek）。
+需要 Python 3.9+，和一个兼容 OpenAI 接口的模型 API key（默认 DeepSeek，[别家](#测过的模型)也行）。
 
 ```sh
 git clone https://github.com/Skyxu-001/en-coach.git
@@ -77,6 +77,14 @@ export DEEPSEEK_API_KEY=sk-...
 `python3 install.py --dry-run` 只显示会改什么，不真改。
 `python3 install.py --uninstall` 全部卸掉，只留错题本。
 
+没出提示？hook 出错时故意不吭声，所以手动检查一下：
+
+```sh
+python3 ~/.claude/english-coach/en-coach.py --check     # Windows 用 py
+```
+
+它会打印接口地址、模型名、找没找到 key（不打印 key 本身）、模型的原始回复或 HTTP 报错，以及会显示哪些提示。
+
 ## 配置
 
 都是可选的环境变量：
@@ -87,10 +95,51 @@ export DEEPSEEK_API_KEY=sk-...
 | `DEEPSEEK_API_KEY` | | 只在接口是 DeepSeek 时才用，免得 DeepSeek 的 key 被发给别家。用别的接口就把它的 key 放进 `EN_COACH_API_KEY` |
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | 任何兼容 OpenAI 的接口，比如 `https://api.openai.com/v1`、`https://openrouter.ai/api/v1`，或本地 Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | 该接口上的模型名 |
+| `EN_COACH_EXTRA_BODY` | | 合并进请求的 JSON，用来设各家自己的开关，比如关掉"思考"；值写 `null` 表示删掉这个字段。各家该填什么见下表 |
 | `EN_COACH_LOG` | `1` | 设成 `0` 就不记错题本 |
 | `EN_COACH_DATA_DIR` | `~/.claude/english` | 提示和错题本存哪 |
 
 选快的模型：你还盯着刚发的消息时提示就出来，才有用。
+
+### 测过的模型
+
+不一定非用 DeepSeek，换一家只要三行，比如 OpenAI：
+
+```sh
+export EN_COACH_BASE_URL=https://api.openai.com/v1
+export EN_COACH_MODEL=gpt-4.1-mini
+export EN_COACH_API_KEY=sk-...
+```
+
+下表每一行都用同样 6 句测试消息（带错的英文、中英夹杂、纯中文）走过真实的 hook，提示都正常。
+延迟是模型调用的中位数，2026-11-09 在美国测，每句跑一次：
+
+| 厂商 | `EN_COACH_BASE_URL` | `EN_COACH_MODEL` | `EN_COACH_EXTRA_BODY` | 中位延迟 |
+|---|---|---|---|---|
+| DeepSeek（默认） | `https://api.deepseek.com` | `deepseek-flash` | | 1.2 秒 |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4.1-mini` | | 1.1 秒 |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.4-mini` | `{"max_tokens": null, "max_completion_tokens": 320, "reasoning_effort": "none"}` | 0.8 秒 |
+| Gemini（经 OpenRouter） | `https://openrouter.ai/api/v1` | `google/gemini-3.8-flash` | `{"reasoning": {"effort": "low"}}` | 1.9 秒 |
+| Gemini（经 OpenRouter） | `https://openrouter.ai/api/v1` | `google/gemini-3.5-flash-lite` | | 0.9 秒 |
+| Claude（经 OpenRouter） | `https://openrouter.ai/api/v1` | `anthropic/claude-haiku-5.5` | `{"reasoning": {"effort": "none"}}` | 1.0 秒 |
+| 通义千问（阿里云国际站） | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | `{"enable_thinking": false}` | 1.7 秒 |
+| Kimi（月之暗面） | `https://api.moonshot.cn/v1` | `kimi-k2.6` | `{"temperature": null, "thinking": {"type": "disabled"}}` | 2.8 秒 |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3-flashx` | `{"reasoning_effort": "low"}` | 2.6 秒 |
+
+说明：
+
+- 指令是在 DeepSeek 上调的，它也仍然最便宜。Gemini 3.8 Flash 给的提示最多；Claude Haiku 有一句英文的错没挑出来。
+- Kimi、智谱、通义是从美国测的，在国内用应该更快。platform.moonshot.cn 申请的 Kimi key 只能用 `api.moonshot.cn`。
+- `EN_COACH_EXTRA_BODY` 是"字符串里的 JSON"。在 shell 里用单引号包起来：
+  `export EN_COACH_EXTRA_BODY='{"reasoning_effort": "low"}'`；写进 `settings.json` 的 `env` 时，里面的双引号要转义：
+  `"EN_COACH_EXTRA_BODY": "{\"reasoning_effort\": \"low\"}"`。
+
+**表里没有的模型？** 失败几乎都是两种原因之一：模型先"思考"再回答，把 token 全花在思考上（回复为空）；或者它不认某个标准字段（`max_tokens`、`temperature`）。
+跑一下 `--check` 看是哪种，再用 `EN_COACH_EXTRA_BODY` 关掉思考或删掉那个字段。别用只会推理的模型：实测一个花了 7.8 秒，一条都没出。
+
+**本地模型（Ollama）** 也能用：`EN_COACH_BASE_URL=http://localhost:11434/v1`，模型名随意，`EN_COACH_API_KEY` 随便填个非空值。效果看模型大小：
+小模型（1B 到 3B，4 GB 显卡能跑的那种）几乎给不出能用的提示，7B 到 27B 的开源模型也明显不如上表的云端模型。
+用你的机器能在 12 秒限时内轻松跑完的最大模型；另外 Ollama 刚加载模型后的第一条会慢一些。
 
 ## 原理和踩过的坑
 

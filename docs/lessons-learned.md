@@ -118,6 +118,16 @@ no context, quality was the same or better.
     the same mtime as the source. Run tests with `python -B`.
 12. **A test used a Python 3.10 API** while the hook ran on the system Python 3.9.
     The test that guards imports crashed instead of checking. CI now runs 3.9.
+13. **"Any OpenAI-compatible API works" was only half true.** Trying 14 models
+    with the plain request, about half gave nothing. Several think before
+    answering and spent all 320 tokens on it, returning `content: null`, which
+    also crashed the hook. GPT-5 models reject `max_tokens`. Kimi only accepts
+    temperature 1. GPT-5 nano, Gemini Flash-Lite and Qwen Flash write
+    `F|orig|fix` without the error type, and every one of their corrections was
+    dropped. And because the hook fails silently, each of these looked exactly
+    like "you made no mistakes". Now: `EN_COACH_EXTRA_BODY` for per-model
+    switches, an empty reply is just "no tips", the three-field form is
+    accepted, and `--check` shows the real error.
 
 ## The status line refresh trap
 

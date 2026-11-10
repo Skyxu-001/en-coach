@@ -419,6 +419,147 @@ class ApiKeyAndProvider(unittest.TestCase):
             m.BASE_URL = saved
 
 
+class ExtraBody(unittest.TestCase):
+    """Many models think by default and spend every token on it, or reject a
+    standard field (GPT-5: max_tokens; Kimi: temperature). Measured on 14 models,
+    only about half worked with the plain request. EN_COACH_EXTRA_BODY is the one
+    generic switch; the README lists a tested value per provider."""
+
+    def setUp(self):
+        self.saved = os.environ.pop(m.EXTRA_BODY_ENV, None)
+
+    def tearDown(self):
+        os.environ.pop(m.EXTRA_BODY_ENV, None)
+        if self.saved is not None:
+            os.environ[m.EXTRA_BODY_ENV] = self.saved
+
+    def test_fields_are_added_and_null_removes(self):
+        os.environ[m.EXTRA_BODY_ENV] = ('{"reasoning_effort": "none", "max_tokens": null, '
+                                        '"max_completion_tokens": 320}')
+        body = m.build_request_body("x")
+        self.assertEqual(body["reasoning_effort"], "none")
+        self.assertEqual(body["max_completion_tokens"], 320)
+        self.assertNotIn("max_tokens", body)
+        self.assertEqual(body["temperature"], 0)
+
+    def test_it_can_override_the_deepseek_default(self):
+        saved = m.BASE_URL
+        try:
+            m.BASE_URL = "https://api.deepseek.com"
+            os.environ[m.EXTRA_BODY_ENV] = '{"thinking": null}'
+            self.assertNotIn("thinking", m.build_request_body("x"))
+        finally:
+            m.BASE_URL = saved
+
+    def test_broken_value_is_ignored_not_fatal(self):
+        plain = m.build_request_body("x")
+        for bad in ("{reasoning_effort: none}", '["a"]', '"none"', "42", "null"):
+            os.environ[m.EXTRA_BODY_ENV] = bad
+            self.assertEqual(m.build_request_body("x"), plain, bad)
+
+    def test_null_content_is_an_empty_reply(self):
+        """A model that thinks until max_tokens returns content: null.
+        That crashed with AttributeError instead of meaning 'no tips'."""
+        import io
+
+        class Reply(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        reply = {"choices": [{"message": {"role": "assistant", "content": None}}]}
+        saved_open, saved_key = m.urllib.request.urlopen, os.environ.get("EN_COACH_API_KEY")
+        try:
+            m.urllib.request.urlopen = lambda *a, **k: Reply(json.dumps(reply).encode())
+            os.environ["EN_COACH_API_KEY"] = "k"
+            self.assertEqual(m.ask_model("some prose here"), "")
+        finally:
+            m.urllib.request.urlopen = saved_open
+            os.environ.pop("EN_COACH_API_KEY", None)
+            if saved_key is not None:
+                os.environ["EN_COACH_API_KEY"] = saved_key
+
+
+class SelfCheck(unittest.TestCase):
+    """The hook fails silently by design, so a wrong model or a 400 used to look
+    exactly like 'no mistakes'. --check shows the error instead."""
+
+    def run_check(self, base_url, key="k", script=HOOK):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("EN_COACH_")
+               and k != "DEEPSEEK_API_KEY"}
+        home = tempfile.mkdtemp()            # never read the real ~/.claude/settings.json
+        self.addCleanup(lambda: __import__("shutil").rmtree(home, ignore_errors=True))
+        env.update(HOME=home, USERPROFILE=home, PYTHONIOENCODING="utf-8")
+        if base_url:
+            env["EN_COACH_BASE_URL"] = base_url
+        if key:
+            env["EN_COACH_API_KEY"] = key
+        return subprocess.run([sys.executable, "-B", str(script), "--check"],
+                              capture_output=True, env=env, timeout=60)
+
+    def test_settings_json_env_is_used(self):
+        """Many people put the key in settings.json, which a terminal never sees.
+        --check must read it, or it reports 'key missing' for a working setup."""
+        import shutil
+        url = self.serve(200, {"choices": [{"message": {"content": "NONE"}}]})
+        with tempfile.TemporaryDirectory() as claude_dir:
+            install = pathlib.Path(claude_dir) / "english-coach"
+            install.mkdir()
+            shutil.copy(HOOK, install / "en-coach.py")
+            (pathlib.Path(claude_dir) / "settings.json").write_text(json.dumps(
+                {"env": {"EN_COACH_API_KEY": "k", "EN_COACH_BASE_URL": url,
+                         "EN_COACH_EXTRA_BODY": '{"reasoning_effort": "low"}'}}), encoding="utf-8")
+            r = self.run_check(None, key=None, script=install / "en-coach.py")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn(b"read from settings.json", r.stdout)
+        self.assertIn(b'"reasoning_effort": "low"', r.stdout)
+        self.assertIn(url.encode(), r.stdout)
+
+    def serve(self, status, payload):
+        import http.server
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                data = json.dumps(payload).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_address[1]}/v1"
+
+    def test_missing_key_is_reported(self):
+        r = self.run_check("http://127.0.0.1:9/v1", key=None)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(b"MISSING", r.stdout)
+
+    def test_http_error_is_shown(self):
+        url = self.serve(400, {"error": {"message": "Unsupported parameter: 'max_tokens'"}})
+        r = self.run_check(url)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(b"HTTP 400", r.stdout)
+        self.assertIn(b"max_tokens", r.stdout)
+
+    def test_tips_are_shown(self):
+        url = self.serve(200, {"choices": [{"message": {
+            "content": "F|spelling|is failling|is failing"}}]})
+        r = self.run_check(url)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn(b"tips      1", r.stdout)
+        self.assertIn(b"failing", r.stdout)
+
+
 class Parse(unittest.TestCase):
     """Models copy examples from the prompt and invent text that isn't there."""
 
@@ -429,6 +570,16 @@ class Parse(unittest.TestCase):
         prose = "we can fix it latter"
         self.assertEqual(m.parse("F|spelling|nonexistent phrase|whatever", prose), [])
         self.assertEqual(len(m.parse("F|spelling|latter|later", prose)), 1)
+
+    def test_fix_without_kind_is_kept(self):
+        """GPT-5 nano, Gemini Flash-Lite and Qwen Flash often write F|orig|fix.
+        Requiring four fields dropped every one of their corrections."""
+        prose = "how do I undo the last commit without lose my changes?"
+        items = m.parse("F|without lose|without losing", prose)
+        self.assertEqual([(i["orig"], i["fix"], i["kind"]) for i in items],
+                         [("without lose", "without losing", "word-choice")])
+        # a kind word in the orig slot isn't in the text, so it is still dropped
+        self.assertEqual(m.parse("F|grammar|without losing", prose), [])
 
     def test_case_only_change_rejected(self):
         self.assertEqual(m.parse("F|spelling|github|GitHub", "i think github is down"), [])
@@ -585,8 +736,18 @@ class Contract(unittest.TestCase):
     """Invariants whose breakage would quietly change Claude's answers or the workflow."""
 
     def test_hook_never_writes_stdout(self):
-        self.assertNotIn("print(", HOOK.read_text(encoding="utf-8"),
-                         "a hook's stdout can reach Claude's context")
+        """print() is allowed only in check(), the manual --check command."""
+        import ast
+        tree = ast.parse(HOOK.read_text(encoding="utf-8"))
+        allowed = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "check":
+                allowed |= {id(n) for n in ast.walk(node)}
+        stray = [n.lineno for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "print"
+                 and id(n) not in allowed]
+        self.assertEqual(stray, [], "a hook's stdout can reach Claude's context")
+        self.assertNotIn("sys.stdout.write", HOOK.read_text(encoding="utf-8"))
 
     def test_hook_prints_nothing_end_to_end(self):
         """Run the real script with no key: it must exit 0 and print nothing."""
@@ -686,8 +847,10 @@ class StatusLine(unittest.TestCase):
             d = pathlib.Path(d)
             (d / "status-s1.txt").write_text("tip line", encoding="utf-8")
             t0 = time.monotonic()
-            out = self.run_statusline(d, chained="echo early; sleep 15; echo late")
-            self.assertLess(time.monotonic() - t0, 10)
+            # The cutoff is 4 s; 20 leaves room for a loaded machine and is still
+            # far below the 30 s it would take if the old status line were waited for.
+            out = self.run_statusline(d, chained="echo early; sleep 30; echo late")
+            self.assertLess(time.monotonic() - t0, 20)
             self.assertTrue(out.endswith("tip line\n"), out)
             self.assertNotIn("late", out)
 

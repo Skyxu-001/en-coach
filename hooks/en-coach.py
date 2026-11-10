@@ -8,9 +8,16 @@ say in English, and writes the result to two places:
   * a per-session status file that the status line prints (for you to see)
   * an error log, errors.jsonl (for you to review later)
 
-It NEVER writes to stdout. Whatever a hook prints can end up in Claude's
-context, so the coaching stays invisible to Claude and its answers are exactly
-what they would be without this hook. Every failure exits silently with 0.
+As a hook it NEVER writes to stdout. Whatever a hook prints can end up in
+Claude's context, so the coaching stays invisible to Claude and its answers are
+exactly what they would be without this hook. Every failure exits silently with 0.
+
+Because failures are silent, there is a manual self-check for setting it up:
+
+    python3 en-coach.py --check ["a sentence to try"]
+
+prints the endpoint, the model, whether a key was found (never the key), the
+model's raw reply or the HTTP error, and the tips it would show.
 
 Standard library only, Python 3.9+, macOS / Linux / Windows.
 """
@@ -19,7 +26,9 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +49,10 @@ API_TIMEOUT_SECONDS = 12
 BASE_URL = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com").rstrip("/")
 MODEL = os.environ.get("EN_COACH_MODEL", "deepseek-flash")
 ENDPOINT = BASE_URL + "/chat/completions"
+# JSON object merged into the request body, for the per-model switches that
+# have no common name, e.g. turning thinking off: {"reasoning_effort": "none"}.
+# A null value removes a field: {"temperature": null}. See the README table.
+EXTRA_BODY_ENV = "EN_COACH_EXTRA_BODY"
 
 DATA_DIR = Path(os.environ.get("EN_COACH_DATA_DIR") or (Path.home() / ".claude" / "english"))
 ERRORS_FILE = DATA_DIR / "errors.jsonl"
@@ -374,7 +387,25 @@ def build_request_body(prose):
     # the unknown field, so only send it to DeepSeek.
     if "deepseek.com" in BASE_URL:
         body["thinking"] = {"type": "disabled"}
+    for k, v in extra_body().items():
+        if v is None:
+            body.pop(k, None)
+        else:
+            body[k] = v
     return body
+
+
+def extra_body():
+    """EN_COACH_EXTRA_BODY as a dict. Anything that isn't a JSON object is ignored
+    (a broken setting must not break the hook; --check reports it)."""
+    raw = os.environ.get(EXTRA_BODY_ENV, "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def ask_model(prose):
@@ -386,7 +417,8 @@ def ask_model(prose):
         headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
     with urllib.request.urlopen(req, timeout=API_TIMEOUT_SECONDS) as r:
         d = json.load(r)
-    return d["choices"][0]["message"]["content"].strip()
+    # A model that spends every token thinking returns content: null.
+    return (d["choices"][0]["message"].get("content") or "").strip()
 
 
 # ---------- parsing ----------
@@ -417,8 +449,14 @@ def parse(raw, prose):
                 continue
             items.append({"type": "gap", "zh": zh, "en": en})
 
-        elif tag == "F" and len(parts) >= 4:
-            kind, orig, fix = parts[1].lower(), parts[2], parts[3]
+        elif tag == "F" and len(parts) >= 3:
+            if len(parts) >= 4:
+                kind, orig, fix = parts[1].lower(), parts[2], parts[3]
+            else:
+                # Some models (GPT-5 nano, Gemini Flash-Lite, Qwen Flash) drop the
+                # kind and write F|orig|fix. A kind word mistaken for orig would
+                # not be in your text, so the check below still drops it.
+                kind, orig, fix = "", parts[1], parts[2]
             if not orig or not fix:
                 continue
             if cjk_count(orig):                    # Chinese belongs in GAP, not FIX
@@ -668,7 +706,83 @@ def main():
     append_errors(items, session, payload.get("cwd", ""), prose)
 
 
+CHECK_SENTENCE = "can you help me check why the build is failling? I already try it twice"
+
+
+def settings_env():
+    """The env block of Claude Code's settings.json. The hook gets these from
+    Claude Code; a terminal running --check doesn't, so --check reads them."""
+    here = Path(__file__).resolve().parent.parent / "settings.json"   # installed copy
+    for path in (here, Path.home() / ".claude" / "settings.json"):
+        try:
+            env = json.loads(path.read_text(encoding="utf-8-sig")).get("env")
+        except Exception:
+            continue
+        if isinstance(env, dict):
+            return {k: str(v) for k, v in env.items()
+                    if k.startswith("EN_COACH_") or k == "DEEPSEEK_API_KEY"}
+    return {}
+
+
+def check(sentence):
+    """Manual self-check (not the hook path): print every step, errors included."""
+    global BASE_URL, MODEL, ENDPOINT
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    from_settings = []
+    for k, v in settings_env().items():
+        if k not in os.environ:        # what you exported in this shell wins
+            os.environ[k] = v
+            from_settings.append(k)
+    BASE_URL = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com").rstrip("/")
+    MODEL = os.environ.get("EN_COACH_MODEL", "deepseek-flash")
+    ENDPOINT = BASE_URL + "/chat/completions"
+    if from_settings:
+        print(f"settings  {', '.join(sorted(from_settings))} read from settings.json")
+    print(f"endpoint  {ENDPOINT}")
+    print(f"model     {MODEL}")
+    raw_extra = os.environ.get(EXTRA_BODY_ENV, "").strip()
+    if raw_extra:
+        if extra_body():
+            print(f"extra     {json.dumps(extra_body())}")
+        else:
+            print(f"extra     IGNORED, {EXTRA_BODY_ENV} is not a JSON object: {raw_extra[:80]}")
+    key = api_key()
+    if not key:
+        hint = "EN_COACH_API_KEY" + (" or DEEPSEEK_API_KEY" if "deepseek.com" in BASE_URL else "")
+        print(f"key       MISSING: set {hint}")
+        return 1
+    print("key       found")
+    got = gate({"prompt": sentence})
+    if got is None:
+        print("skipped   this text would not be coached (too short, code, or a command)")
+        return 1
+    prose = redact(got[0])
+    started = time.perf_counter()
+    try:
+        raw = ask_model(prose)
+    except urllib.error.HTTPError as e:
+        body = e.read()[:500].decode("utf-8", "replace")
+        print(f"FAILED    HTTP {e.code}: {redact(body)}")
+        return 1
+    except Exception as e:
+        print(f"FAILED    {type(e).__name__}: {e} (the hook gives up after {API_TIMEOUT_SECONDS} s)")
+        return 1
+    print(f"reply     {time.perf_counter() - started:.1f} s")
+    print(_CONTROL_CHARS.sub("", raw) or "(empty: the model probably spent every token thinking; "
+                                        "turn thinking off, see the README)")
+    items = parse(raw, prose)
+    print("tips      " + (f"{len(items)}" if items else "none"))
+    if items:
+        print(render(items, 100))
+    return 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"]:
+        sys.exit(check(" ".join(sys.argv[2:]) or CHECK_SENTENCE))
     try:
         main()
     except Exception:

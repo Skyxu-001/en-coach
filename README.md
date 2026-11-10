@@ -39,8 +39,9 @@ the lessons where I already am, and kept them out of the way:
 - **Claude is unaffected.** The hook prints nothing; tips go to the status line,
   which is not part of the conversation. Claude's answers are the same with or
   without it (checked by running the same prompts both ways).
-- **Cheap.** About **$0.10 a month** at ~40 coached messages a day with DeepSeek.
-  Any OpenAI-compatible API works.
+- **Cheap, and not tied to one provider.** About **$0.10 a month** at ~40 coached
+  messages a day with DeepSeek. Also tested with OpenAI, Gemini, Claude, Qwen,
+  Kimi and GLM, or run a local model ([tested models](#tested-models)).
 
 ## What it teaches
 
@@ -57,7 +58,7 @@ the lessons where I already am, and kept them out of the way:
 ## Install
 
 You need Python 3.9+ and an API key for an OpenAI-compatible chat API
-(DeepSeek by default).
+(DeepSeek by default; [other providers](#tested-models) work too).
 
 ```sh
 git clone https://github.com/Skyxu-001/en-coach.git
@@ -88,6 +89,15 @@ Start a new Claude Code session and type something. The installer:
 `python3 install.py --dry-run` shows the change without making it.
 `python3 install.py --uninstall` removes everything except your error log.
 
+No tip showing up? The hook fails silently on purpose, so check the setup by hand:
+
+```sh
+python3 ~/.claude/english-coach/en-coach.py --check     # Windows: py
+```
+
+It prints the endpoint, the model, whether a key was found (never the key
+itself), the model's raw reply or the HTTP error, and the tips it would show.
+
 ## Configuration
 
 All optional, set as environment variables:
@@ -98,11 +108,62 @@ All optional, set as environment variables:
 | `DEEPSEEK_API_KEY` | | used only when the endpoint is DeepSeek, so a DeepSeek key is never sent to another provider. Using another endpoint? Put its key in `EN_COACH_API_KEY` |
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | any OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, or a local Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | model name for that endpoint |
+| `EN_COACH_EXTRA_BODY` | | JSON merged into the request, for per-model switches such as turning thinking off; `null` removes a field. Values for each provider are in the table below |
 | `EN_COACH_LOG` | `1` | `0` to stop writing the error log |
 | `EN_COACH_DATA_DIR` | `~/.claude/english` | where tips and the log live |
 
 Pick a fast model. The tip is only useful if it shows up while you're still
 looking at your prompt.
+
+### Tested models
+
+You don't have to use DeepSeek. Switching takes three lines, for example OpenAI:
+
+```sh
+export EN_COACH_BASE_URL=https://api.openai.com/v1
+export EN_COACH_MODEL=gpt-4.1-mini
+export EN_COACH_API_KEY=sk-...
+```
+
+Every row below ran the same 6 test messages (English with mistakes, mixed
+Chinese and English, all Chinese) through the real hook and gave sensible tips.
+Median time for the model call, measured from the US on 2026-11-09, one run each:
+
+| Provider | `EN_COACH_BASE_URL` | `EN_COACH_MODEL` | `EN_COACH_EXTRA_BODY` | Median |
+|---|---|---|---|---|
+| DeepSeek (default) | `https://api.deepseek.com` | `deepseek-flash` | | 1.2 s |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4.1-mini` | | 1.1 s |
+| OpenAI | `https://api.openai.com/v1` | `gpt-5.4-mini` | `{"max_tokens": null, "max_completion_tokens": 320, "reasoning_effort": "none"}` | 0.8 s |
+| Gemini, via OpenRouter | `https://openrouter.ai/api/v1` | `google/gemini-3.8-flash` | `{"reasoning": {"effort": "low"}}` | 1.9 s |
+| Gemini, via OpenRouter | `https://openrouter.ai/api/v1` | `google/gemini-3.5-flash-lite` | | 0.9 s |
+| Claude, via OpenRouter | `https://openrouter.ai/api/v1` | `anthropic/claude-haiku-5.5` | `{"reasoning": {"effort": "none"}}` | 1.0 s |
+| Qwen (Alibaba Cloud international) | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | `{"enable_thinking": false}` | 1.7 s |
+| Kimi (Moonshot) | `https://api.moonshot.cn/v1` | `kimi-k2.6` | `{"temperature": null, "thinking": {"type": "disabled"}}` | 2.8 s |
+| GLM (Zhipu) | `https://open.bigmodel.cn/api/paas/v4` | `glm-5.3-flashx` | `{"reasoning_effort": "low"}` | 2.6 s |
+
+Notes:
+
+- The instructions were tuned on DeepSeek, and it is still the cheapest. Gemini
+  3.8 Flash gave the most tips; Claude Haiku missed the mistakes in one English message.
+- Kimi, GLM and Qwen were measured from the US; expect them to be faster from China.
+  A Kimi key from platform.moonshot.cn only works on `api.moonshot.cn`.
+- `EN_COACH_EXTRA_BODY` is JSON inside a string. In a shell, single-quote it:
+  `export EN_COACH_EXTRA_BODY='{"reasoning_effort": "low"}'`. In the `env` block of
+  `settings.json`, escape the inner quotes:
+  `"EN_COACH_EXTRA_BODY": "{\"reasoning_effort\": \"low\"}"`.
+
+**Not in the table?** Almost every failure was one of two things: the model
+*thinks* before answering and spends all its tokens on that (empty reply), or it
+rejects a standard field (`max_tokens`, `temperature`). Run `--check` to see which,
+then switch thinking off or drop the field with `EN_COACH_EXTRA_BODY`. Avoid
+reasoning-only models: one took 7.8 s and produced nothing.
+
+**Local models (Ollama)** work too: `EN_COACH_BASE_URL=http://localhost:11434/v1`,
+any model name, and any non-empty `EN_COACH_API_KEY`. Quality depends on size.
+Small models (1B to 3B, what fits a 4 GB GPU) gave almost no usable tips, and
+7B to 27B open models were noticeably worse than the cloud models above. Use
+the biggest model your machine runs in well under the 12-second limit, and note
+that the first message after Ollama loads a model is slower.
 
 ## How it works
 
@@ -120,7 +181,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 72 offline tests:
+A few things that took real debugging to get right, all covered by the 81 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
