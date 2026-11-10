@@ -242,7 +242,49 @@ class InjectedMessages(unittest.TestCase):
     def test_injected_messages_are_skipped(self):
         for p in (self.TASK, self.PEER, self.TEAMMATE, self.AGENT,
                   self.TASK + "\n" + self.TASK):
-            self.assertIsNone(self.gate(p), p[:60])
+            self.assertEqual(self.gate(p), m.NOT_YOURS, p[:60])
+
+    def run_main(self, payload, data_dir):
+        import io
+        saved_dir, saved_stdin, saved_ask = m.DATA_DIR, sys.stdin, m.ask_model
+        try:
+            m.DATA_DIR = data_dir
+            m.ask_model = lambda prose: "NONE"
+            sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode()), encoding="utf-8")
+            m.main()
+        finally:
+            m.DATA_DIR, sys.stdin, m.ask_model = saved_dir, saved_stdin, saved_ask
+            os.environ.pop("EN_COACH_RUNNING", None)
+
+    def test_injected_message_keeps_your_last_tip(self):
+        """A background task finishing a few seconds after your prompt used to
+        wipe the tip before you had read it. Your own uncoachable prompt (`ok`)
+        still clears it, as before."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            status = tmp / "status-keep.txt"
+            for prompt, kept in [(self.TASK, True), (self.PEER, True), ("ok", False)]:
+                status.write_text("✎ latter → later", encoding="utf-8")
+                self.run_main({"prompt": prompt, "session_id": "keep"}, tmp)
+                self.assertEqual(status.read_text(encoding="utf-8") != "", kept, prompt[:30])
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_message_marked_injected_in_transcript_is_not_yours(self):
+        """No tags, but the transcript says the harness sent it (isMeta)."""
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        try:
+            transcript = tmp / "t.jsonl"
+            for prompt in ("Continue from where you left off with the next step", "ok"):
+                transcript.write_text(json.dumps({"type": "user", "isMeta": True,
+                                                  "message": {"content": prompt}}) + "\n",
+                                      encoding="utf-8")
+                self.assertEqual(m.gate({"prompt": prompt, "transcript_path": str(transcript)}),
+                                 m.NOT_YOURS, prompt)
+        finally:
+            import shutil
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_user_words_next_to_injected_block_survive(self):
         mine = "帮我看看这个后台任务为什么又失败了，是不是网络的问题"

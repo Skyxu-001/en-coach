@@ -210,7 +210,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 109 offline tests:
+A few things that took real debugging to get right, all covered by the 111 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background

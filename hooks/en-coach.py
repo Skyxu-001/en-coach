@@ -449,10 +449,19 @@ def strip_injected(prompt):
     return INJECTED_BLOCK_RE.sub(" ", prompt)
 
 
+# gate() result for a message you did not type (a background task finishing, a
+# message from another session or a sub-agent). Skipped like None, but the tip
+# from your last prompt stays on screen: these arrive seconds after you press
+# Enter and used to wipe the tip before you had read it.
+NOT_YOURS = "not-yours"
+
+
 def gate(payload):
-    """Return (prose, ratio), or None to skip this prompt."""
+    """Return (prose, ratio) to coach; None to skip this prompt of yours (the
+    old tip is cleared); NOT_YOURS to skip a message you didn't type (the old
+    tip stays)."""
     if os.environ.get("EN_COACH_RUNNING"):
-        return None
+        return NOT_YOURS
     prompt = payload.get("prompt")
     if not prompt or not isinstance(prompt, str):
         return None
@@ -460,6 +469,8 @@ def gate(payload):
     if stripped.startswith(("/", "!", "#", "<command-message>", "<local-command")):
         return None
     own = strip_injected(prompt)
+    if not own.strip():
+        return NOT_YOURS                # nothing but injected blocks
     # Measured after the injected blocks are gone: a long system reminder in the
     # same message must not drop your own sentence.
     if len(own) > MAX_PROMPT_CHARS:
@@ -468,9 +479,10 @@ def gate(payload):
     # Redact the whole text BEFORE extract_prose cuts it to MAX_PROSE_CHARS:
     # a key cut in half by that cut no longer matches any rule.
     prose, _ = extract_prose(redact(own))
-    if len(prose) < MIN_CHARS or not has_content(prose):
-        return None
+    coachable = len(prose) >= MIN_CHARS and has_content(prose)
     if looks_injected(payload.get("transcript_path"), prompt):
+        return NOT_YOURS
+    if not coachable:
         return None
     return prose, cjk_ratio(prose)
 
@@ -812,6 +824,8 @@ def main():
         return
 
     got = gate(payload)
+    if got == NOT_YOURS:
+        return                          # not yours: leave your last tip alone
     # The session id becomes part of a file name: keep it to safe characters.
     session = re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or "default"))[:64]
     if got is None:
@@ -891,7 +905,7 @@ def check(sentence):
         return 1
     print("key       found")
     got = gate({"prompt": sentence})
-    if got is None:
+    if got is None or got == NOT_YOURS:
         print("skipped   this text would not be coached (too short, code, or a command)")
         return 1
     prose = redact(got[0])
