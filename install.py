@@ -27,6 +27,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 REPO_DIR = Path(__file__).resolve().parent
 INSTALL_DIR_NAME = "english-coach"
@@ -58,8 +59,37 @@ def build_command(python_exe, script):
 def is_ours(command, script_name):
     """Exact match on our installed script, so a hook that merely contains the
     same file name (say ~/bin/open-coach.py) is never touched."""
-    c = str(command or "").strip().strip("'\"")
+    c = posix(str(command or "").strip().strip("'\""))     # a hand-written C:\... path too
     return c.endswith(f"{INSTALL_DIR_NAME}/{script_name}")
+
+
+def is_deepseek(url):
+    """By host name, not substring (same rule as the hook)."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
+
+
+def base_interpreter():
+    """The interpreter to write into settings.json. Inside a virtualenv that is
+    the base Python it was made from: a project's .venv gets deleted or moved,
+    and the status line would then break in every project."""
+    if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+        return sys.executable
+    base = Path(sys.base_prefix)
+    v = sys.version_info
+    candidates = [getattr(sys, "_base_executable", None),
+                  base / "python.exe",
+                  base / "bin" / f"python{v.major}.{v.minor}",
+                  base / "bin" / f"python{v.major}"]
+    venv = Path(os.path.abspath(sys.prefix))
+    for c in candidates:
+        # abspath, not resolve(): a venv's python is a symlink TO the base one.
+        if c and Path(c).is_file() and not Path(os.path.abspath(c)).is_relative_to(venv):
+            return str(c)
+    return sys.executable
 
 
 def load_settings(path):
@@ -166,7 +196,7 @@ def main(argv=None):
     ap.add_argument("--claude-dir",
                     default=os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),
                     help="Claude Code config directory (default: $CLAUDE_CONFIG_DIR or ~/.claude)")
-    ap.add_argument("--python", default=sys.executable,
+    ap.add_argument("--python", default=base_interpreter(),
                     help="interpreter the hooks should run with (default: this one)")
     args = ap.parse_args(argv)
     if args.no_statusline and args.statusline_only:
@@ -252,9 +282,13 @@ def main(argv=None):
         print("\nStatus line set; the plugin provides the hook. Start a new Claude Code session.")
     else:
         print("\nen-coach installed. Start a new Claude Code session to load the hook.")
-    base_url = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com")
-    deepseek_key = os.environ.get("DEEPSEEK_API_KEY") if "deepseek.com" in base_url else None
-    if not (os.environ.get("EN_COACH_API_KEY") or deepseek_key):
+    # The key may be exported in the shell or set in the "env" block of settings.json.
+    env = dict(os.environ)
+    if isinstance(settings.get("env"), dict):
+        env.update({k: str(v) for k, v in settings["env"].items()})
+    base_url = env.get("EN_COACH_BASE_URL", "https://api.deepseek.com")
+    deepseek_key = env.get("DEEPSEEK_API_KEY") if is_deepseek(base_url) else None
+    if not (env.get("EN_COACH_API_KEY") or deepseek_key):
         print("\nOne more step: give it an API key. Either export it in your shell profile:\n"
               "    export DEEPSEEK_API_KEY=sk-...\n"
               "or add it to the \"env\" block of settings.json. See README > Configuration.")

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "en-coach",
-  "description": "Practise English with the prompts you already type. A small model checks each prompt in the background and shows a tip in the status line; Claude never sees it. After installing, run /en-coach:setup once.",
+  "description": "Practise English with the prompts you already type. The prose of each prompt (up to 400 characters, secrets masked) is sent to an OpenAI-compatible API you choose, DeepSeek by default, and the tip shows in the status line; Claude never sees it. After installing, run /en-coach:setup once.",
   "author": {
     "name": "Sky",
     "url": "https://github.com/Skyxu-001"

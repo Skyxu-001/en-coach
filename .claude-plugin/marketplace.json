@@ -9,7 +9,7 @@
     {
       "name": "en-coach",
       "source": "./",
-      "description": "Practise English with the prompts you already type; tips show in the status line and Claude never sees them. Run /en-coach:setup after installing.",
+      "description": "Practise English with the prompts you already type. Each prompt's prose is sent to an OpenAI-compatible API you choose (DeepSeek by default); tips show in the status line and Claude never sees them. Run /en-coach:setup after installing.",
       "homepage": "https://github.com/Skyxu-001/en-coach",
       "license": "MIT",
       "category": "productivity"

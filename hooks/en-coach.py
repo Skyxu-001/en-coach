@@ -29,6 +29,7 @@ import sys
 import time
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -230,31 +231,62 @@ _SECRET_SUBS = [
     (re.compile(r"(?i)\b(password|passwd|passcode|pwd)(\s+(?:is|was))\s+"
                 r"(?=[^\s]*[0-9!@#$%^&*_+=~-])[^\s,;]{4,}"), r"\1\2 <REDACTED>"),
     (re.compile(r"(密码|口令|密钥)(\s*(?:是|为|[:：]))\s*[\x21-\x7e]{4,}"), r"\1\2<REDACTED>"),
+    # Whole private key, or to the end of the text when the END line is missing.
+    (re.compile(r"-----BEGIN[^-\n]*PRIVATE KEY-----.*?"
+                r"(?:-----END[^-\n]*PRIVATE KEY-----|\Z)", re.S), "<REDACTED-PRIVATE-KEY>"),
+    # Known key formats, by prefix.
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "<REDACTED-KEY>"),
+    (re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"), "<REDACTED-KEY>"),  # Stripe
     (re.compile(r"\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{20,}"), "<REDACTED-TOKEN>"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "<REDACTED-TOKEN>"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<REDACTED-AWS>"),
-    (re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}"), "<REDACTED-SLACK>"),
+    (re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}"), "<REDACTED-TOKEN>"),        # GitLab
+    (re.compile(r"\bhf_[A-Za-z0-9]{30,}"), "<REDACTED-TOKEN>"),              # Hugging Face
+    (re.compile(r"\bnpm_[A-Za-z0-9]{30,}"), "<REDACTED-TOKEN>"),
+    (re.compile(r"\bpypi-[A-Za-z0-9_\-]{32,}"), "<REDACTED-TOKEN>"),
+    (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), "<REDACTED-AWS>"),
+    (re.compile(r"\bx(?:ox[abeoprs]|app)-[A-Za-z0-9\-]{10,}"), "<REDACTED-SLACK>"),
     (re.compile(r"\bAIza[A-Za-z0-9_\-]{30,}"), "<REDACTED-GCP>"),
+    (re.compile(r"\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b"), "<REDACTED-KEY>"),     # Zhipu GLM
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),
      "<REDACTED-JWT>"),
-    (re.compile(r"-----BEGIN[^-\n]*PRIVATE KEY-----"), "<REDACTED-PRIVATE-KEY>"),
-    # key = value / "token": "..." style assignments
-    (re.compile(r"(?i)\b(api[_\-]?key|access[_\-]?token|auth[_\-]?token|token|secret"
-                r"|password|passwd|pwd|bearer)\b(\s*[:=]\s*)"
-                r"[\"']?[^\s\"',;]{8,}"), r"\1\2<REDACTED>"),
+    # "Authorization: Bearer <token>". Needs a digit so "bearer authentication"
+    # is still coached.
+    (re.compile(r"(?i)\b(bearer)\s+(?=[A-Za-z0-9._~+/\-]*\d)[A-Za-z0-9._~+/\-]{8,}=*"),
+     r"\1 <REDACTED>"),
+    # Assignments: API_KEY=..., DB_PASSWORD: ..., "client_secret": "...".
+    # The name may carry a prefix or suffix (DB_PASSWORD, AWS_SECRET_ACCESS_KEY):
+    # `_` is a word character, so a plain \bpassword\b never matched those.
+    # Prefix and suffix must be joined by _ or -, so "tokens: ..." in a sentence is left alone.
+    # Starts only where a name starts (not \b): with \b every position inside a
+    # long run of _ and - was a new start, and 8000 of them took seconds.
+    (re.compile(r"(?i)(?<![A-Za-z0-9_\-])((?:[A-Za-z0-9_\-]*[_\-])?(?:api[_\-]?key|access[_\-]?token"
+                r"|auth[_\-]?token|token|secret|password|passwd|passcode|pwd|credentials?)"
+                r"(?:[_\-][A-Za-z0-9_\-]*)?|[A-Za-z0-9]+[_\-]key)"
+                r"([\"']?\s*[:=]\s*)[\"']?[^\s\"',;&)]{8,}"), r"\1\2<REDACTED>"),
 ]
 # Bare high-entropy strings: 32+ chars mixing upper, lower and digits.
 # Lower-case hex (git hashes) and dashed UUIDs are left alone on purpose.
-_HIGH_ENTROPY = re.compile(r"\b(?=[A-Za-z0-9_\-]{32,}\b)"
-                           r"(?=[^\s]*[a-z])(?=[^\s]*[A-Z])(?=[^\s]*\d)"
-                           r"[A-Za-z0-9_\-]{32,}\b")
+# AWS secret keys (40 chars, may contain / and +) get their own rule.
+_HIGH_ENTROPY_CANDIDATE = re.compile(r"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])"
+                                     r"|(?<![A-Za-z0-9/+])[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+])")
+
+
+def _looks_random(token):
+    """Upper, lower and digit all inside this one token. (A lookahead over \\S*
+    used to look past dots and slashes, so the parts of a dotted key were judged
+    by their neighbours.)"""
+    if "/" in token or "+" in token:
+        if len(token) != 40 or token.startswith("/"):
+            return False
+    return (any(c.islower() for c in token) and any(c.isupper() for c in token)
+            and any(c.isdigit() for c in token))
 
 
 def redact(text):
     for pat, repl in _SECRET_SUBS:
         text = pat.sub(repl, text)
-    return _HIGH_ENTROPY.sub("<REDACTED-SECRET>", text)
+    return _HIGH_ENTROPY_CANDIDATE.sub(
+        lambda mt: "<REDACTED-SECRET>" if _looks_random(mt.group(0)) else mt.group(0), text)
 
 
 def cjk_count(s):
@@ -307,14 +339,29 @@ LOG_CMD_RE = re.compile(r"""(
                                                 # English words: need - / . = in the args
     | ^\s*(git|go|node|curl|ssh|brew|cargo|python3?)\s+\w[\w-]*\s+[-/]
                                                 # or subcommand + flag (git commit -m ...)
+    | ^\s*SELECT\b.*\bFROM\b                    # SQL: capitals AND its structure, so
+    | ^\s*(INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET)\b   # "Update the README" and
+    | ^\s*(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW)\b           # "Select all" stay prose
+    | ^\s*(//|/\*)                              # C-style comment lines
 )""", re.X)                                     # note: no re.I
+
+# A Markdown code fence: everything between ``` (or ~~~) lines is code.
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 
 def extract_prose(text):
     """Strip logs / code / stack traces and keep natural language.
     Returns (prose, dropped_line_count)."""
     kept, dropped = [], 0
+    in_fence = False                   # an unclosed fence drops everything after it
     for line in text.split("\n"):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            dropped += 1
+            continue
+        if in_fence:
+            dropped += 1
+            continue
         s = line.strip()
         if not s:
             continue
@@ -410,12 +457,17 @@ def gate(payload):
     if not prompt or not isinstance(prompt, str):
         return None
     stripped = prompt.strip()
-    if len(prompt) > MAX_PROMPT_CHARS:
-        return None
     if stripped.startswith(("/", "!", "#", "<command-message>", "<local-command")):
         return None
+    own = strip_injected(prompt)
+    # Measured after the injected blocks are gone: a long system reminder in the
+    # same message must not drop your own sentence.
+    if len(own) > MAX_PROMPT_CHARS:
+        return None
 
-    prose, _ = extract_prose(strip_injected(prompt))
+    # Redact the whole text BEFORE extract_prose cuts it to MAX_PROSE_CHARS:
+    # a key cut in half by that cut no longer matches any rule.
+    prose, _ = extract_prose(redact(own))
     if len(prose) < MIN_CHARS or not has_content(prose):
         return None
     if looks_injected(payload.get("transcript_path"), prompt):
@@ -424,13 +476,22 @@ def gate(payload):
 
 
 # ---------- model call ----------
+def is_deepseek(url):
+    """By host name, not substring: https://deepseek.com.example.net/ is not DeepSeek."""
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
+
+
 def api_key():
     """EN_COACH_API_KEY first. DEEPSEEK_API_KEY only when the endpoint really is
     DeepSeek: never send one provider's key to another host. Values that are
     still encrypted (dotenvx style "encrypted:...") are refused: sending one
     would only get a 401 and leak the ciphertext for nothing."""
     names = ["EN_COACH_API_KEY"]
-    if "deepseek.com" in BASE_URL:
+    if is_deepseek(BASE_URL):
         names.append("DEEPSEEK_API_KEY")
     for name in names:
         k = (os.environ.get(name) or "").strip()
@@ -450,7 +511,7 @@ def build_request_body(prose):
     # DeepSeek's flash model thinks by default and would burn every token on
     # reasoning, returning nothing before the timeout. Other providers may reject
     # the unknown field, so only send it to DeepSeek.
-    if "deepseek.com" in BASE_URL:
+    if is_deepseek(BASE_URL):
         body["thinking"] = {"type": "disabled"}
     for k, v in extra_body().items():
         if v is None:
@@ -778,7 +839,8 @@ def settings_env():
     """The env block of Claude Code's settings.json. The hook gets these from
     Claude Code; a terminal running --check doesn't, so --check reads them."""
     here = Path(__file__).resolve().parent.parent / "settings.json"   # installed copy
-    for path in (here, Path.home() / ".claude" / "settings.json"):
+    config_dir = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude").expanduser()
+    for path in (here, config_dir / "settings.json"):
         try:
             env = json.loads(path.read_text(encoding="utf-8-sig")).get("env")
         except Exception:
@@ -824,7 +886,7 @@ def check(sentence):
             print(f"extra     IGNORED, {EXTRA_BODY_ENV} is not a JSON object: {raw_extra[:80]}")
     key = api_key()
     if not key:
-        hint = "EN_COACH_API_KEY" + (" or DEEPSEEK_API_KEY" if "deepseek.com" in BASE_URL else "")
+        hint = "EN_COACH_API_KEY" + (" or DEEPSEEK_API_KEY" if is_deepseek(BASE_URL) else "")
         print(f"key       MISSING: set {hint}")
         return 1
     print("key       found")

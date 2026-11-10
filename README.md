@@ -116,7 +116,8 @@ To remove it: `/en-coach:setup remove` (or `python3 ~/.claude/english-coach/inst
 puts your old status line back, then `claude plugin uninstall en-coach` if you
 used the plugin. Your error log is kept.
 
-No tip showing up? The hook fails silently on purpose, so check the setup by hand:
+No tip showing up? The hook fails silently on purpose, so check the setup by hand
+(plugin users: this file exists once `/en-coach:setup` has run; no file means run it first):
 
 ```sh
 python3 ~/.claude/english-coach/en-coach.py --check     # Windows: py
@@ -138,7 +139,7 @@ All optional, set as environment variables:
 | `EN_COACH_EXTRA_BODY` | | JSON merged into the request, for per-model switches such as turning thinking off; `null` removes a field. Values for each provider are in the table below |
 | `EN_COACH_NATIVE_LANGUAGE` | `zh` | your first language: `zh` Chinese, or **beta** `ja` Japanese, `ko` Korean, `es` Spanish |
 | `EN_COACH_LOG` | `1` | `0` to stop writing the error log |
-| `EN_COACH_DATA_DIR` | `~/.claude/english` | where tips and the log live |
+| `EN_COACH_DATA_DIR` | `~/.claude/english` (or `english` under `$CLAUDE_CONFIG_DIR` when that is set) | where tips and the log live |
 
 Pick a fast model. The tip is only useful if it shows up while you're still
 looking at your prompt.
@@ -209,7 +210,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 94 offline tests:
+A few things that took real debugging to get right, all covered by the 109 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
@@ -237,11 +238,15 @@ See [spellcheck/README.md](spellcheck/README.md).
 No. The hook writes nothing to stdout, and the status line is not sent to the model.
 
 **What gets sent to the API?**
-Up to 400 characters of the prose in your message, after code and logs are removed.
-Nothing else: not your files, not Claude's replies. Things that look like secrets
-(API keys and tokens, `password is ...`, `user:pass@` in URLs, `key = value`
-assignments) are masked before sending and before logging. That is a best
-effort, not a guarantee, so don't paste secrets into prompts.
+Up to 400 characters of the prose in your message. Fenced code blocks, lines that
+look like code, logs, commands or stack traces are filtered out first; the filter
+works line by line and is a best effort, so a line of code written like a
+sentence can still get through. Nothing else is sent: not your files, not
+Claude's replies. Things that look like secrets (API keys and tokens in common
+formats, `Bearer ...`, `password is ...`, `user:pass@` in URLs, assignments
+such as `API_KEY=...` or `db_password: ...`, private keys) are masked before
+sending and before logging. That too is a best effort, not a guarantee, so
+don't paste secrets into prompts.
 
 **I don't speak Chinese. Is it useful?**
 FIX and REWRITE work for anyone writing English. For GAP and SAY, set

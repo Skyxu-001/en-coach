@@ -52,6 +52,32 @@ def kill_tree(proc):
             pass
 
 
+def find_bash():
+    """bash for the chained status line. On Windows, PATH can put
+    C:\\Windows\\System32\\bash.exe (the WSL launcher) first, depending on how
+    Claude Code was started: it would run your status line inside Linux, or
+    print a UTF-16 error into the status line. So: Claude Code's own setting,
+    then a bash outside System32 / WindowsApps, then Git's usual places."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    candidates = [os.environ.get("CLAUDE_CODE_GIT_BASH_PATH"), shutil.which("bash")]
+    git = shutil.which("git")
+    if git:                                   # ...\Git\cmd\git.exe -> ...\Git\bin\bash.exe
+        candidates.append(str(Path(git).resolve().parent.parent / "bin" / "bash.exe"))
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432"),
+                 os.environ.get("LOCALAPPDATA") and os.path.join(os.environ["LOCALAPPDATA"], "Programs")):
+        if root:
+            candidates.append(os.path.join(root, "Git", "bin", "bash.exe"))
+    for c in candidates:
+        if not c or not os.path.isfile(c):
+            continue
+        low = c.lower().replace("/", "\\")
+        if "\\windows\\system32\\" in low or "\\windowsapps\\" in low:
+            continue
+        return c
+    return None
+
+
 def run_chained(raw_input):
     """Run the status line you had before installing, if any."""
     command = chained_command()
@@ -59,7 +85,7 @@ def run_chained(raw_input):
         return ""
     # Claude Code runs status line commands through a POSIX shell (Git Bash on
     # Windows), so do the same; fall back to the platform shell.
-    bash = shutil.which("bash")
+    bash = find_bash()
     argv = [bash, "-c", command] if bash else command
     extra = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
              else {"start_new_session": True})

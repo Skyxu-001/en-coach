@@ -130,6 +130,48 @@ class ExtractProse(unittest.TestCase):
         ]:
             self.assertEqual(self.keep(line), "", f"log/command not dropped: {line!r}")
 
+    def test_fenced_code_block_is_dropped(self):
+        """Lines inside ``` are code even when they read like prose (SQL, YAML,
+        comments): they must not be sent as "your English"."""
+        text = "\n".join([
+            "why does this query return nothing for inactive users",
+            "```sql",
+            "select id, email from internal_users where active = true",
+            "description: internal billing settlement service",
+            "```",
+            "can you check it for me please",
+        ])
+        self.assertEqual(self.keep(text), "why does this query return nothing for inactive "
+                                          "users can you check it for me please")
+
+    def test_unclosed_fence_drops_the_rest(self):
+        text = "please look at this quickly for me\n```\nthe whole config that follows here"
+        self.assertEqual(self.keep(text), "please look at this quickly for me")
+
+    def test_sql_and_comment_lines_dropped(self):
+        for line in [
+            "SELECT id, email FROM internal_users WHERE active = true",
+            "INSERT INTO payments (id, amount) VALUES (1, 2)",
+            "UPDATE accounts SET balance = 0 WHERE id = 7",
+            "DELETE FROM sessions WHERE expired = 1",
+            "CREATE TABLE ledger (id int primary key)",
+            "// this comment explains the billing settlement logic",
+            "/* the legacy cleanup of the payment ledger table */",
+        ]:
+            self.assertEqual(self.keep(line), "", f"code not dropped: {line!r}")
+
+    def test_sentences_starting_with_sql_words_survive(self):
+        """Only capitals plus SQL structure count; these are everyday requests."""
+        for line in [
+            "Update the README before you merge the branch",
+            "Select all the files and move them to the archive",
+            "Delete this file please, nobody uses it anymore",
+            "Create a table in the doc that compares the three options",
+            "Drop the old approach if it is too slow",
+            "UPDATE: the build passed after the second try",
+        ]:
+            self.assertEqual(self.keep(line), line, f"wrongly dropped: {line!r}")
+
     def test_log_cmd_rule_is_case_sensitive(self):
         """No re.I, and no inline (?-i:) either: that needs Python 3.11+ and an
         older interpreter would raise re.error that main() silently swallows."""
@@ -217,6 +259,15 @@ class InjectedMessages(unittest.TestCase):
         self.assertIsNotNone(got)
         self.assertIn("帮我看一下", got[0])
         self.assertIn("错在哪儿了呢", got[0])
+
+    def test_long_injected_block_does_not_hide_your_sentence(self):
+        """The 8000-character limit was checked before the injected blocks were
+        removed, so a long system reminder silently dropped your own words."""
+        mine = "can you check why the deploy keeps failing on the staging server"
+        big = "<system-reminder>" + "x " * 6000 + "</system-reminder>"
+        got = self.gate(big + "\n" + mine)
+        self.assertIsNotNone(got)
+        self.assertIn(mine, got[0])
 
     def test_user_text_that_merely_mentions_tags_is_kept(self):
         for p in ("为什么 <task-notification> 会被当成我写的话去纠错呢",
@@ -390,6 +441,23 @@ class ApiKeyAndProvider(unittest.TestCase):
     def test_deepseek_key_used(self):
         os.environ["DEEPSEEK_API_KEY"] = "b"
         self.assertEqual(m.api_key(), "b")
+
+    def test_deepseek_is_judged_by_host_name(self):
+        """A substring test sent DEEPSEEK_API_KEY to any URL containing deepseek.com."""
+        for url, expected in [("https://api.deepseek.com", True),
+                              ("https://deepseek.com/v1", True),
+                              ("https://API.DeepSeek.com/v1", True),
+                              ("https://deepseek.com.example.net/v1", False),
+                              ("https://example.net/deepseek.com/v1", False),
+                              ("http://localhost:11434/v1", False)]:
+            self.assertEqual(m.is_deepseek(url), expected, url)
+        os.environ["DEEPSEEK_API_KEY"] = "b"
+        saved = m.BASE_URL
+        try:
+            m.BASE_URL = "https://deepseek.com.example.net/v1"
+            self.assertIsNone(m.api_key())
+        finally:
+            m.BASE_URL = saved
 
     def test_deepseek_key_never_sent_to_another_provider(self):
         os.environ["DEEPSEEK_API_KEY"] = "b"
@@ -748,6 +816,63 @@ class Redact(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertNotIn("hunter2", sent[0])
 
+    def test_more_secret_formats_are_redacted(self):
+        """Found in the pre-publication review: all of these used to leave the
+        machine as typed. `_` is a word character, so \\bpassword\\b never matched
+        DB_PASSWORD; Bearer was only caught as `bearer: x`; a dotted key was judged
+        by its neighbours."""
+        # Built at run time: whole fake keys in the source would set off secret
+        # scanners (gitleaks, GitHub) on this repository itself.
+        def j(*parts):
+            return "".join(parts)
+        cases = {
+            j("when I run with DB_PASS", "WORD=mysecretpass123 it fails"): "mysecretpass123",
+            j("CLIENT_SEC", "RET=mysecretvalue123 is set"): "mysecretvalue123",
+            j("OPENAI_API_", "KEY=mysec", "retkey12345 does not work"): "mysecretkey12345",
+            j("AWS_SECRET_ACCESS_", "KEY=abcd", "EFGH1234ijklMNOP"): "abcdEFGH1234",
+            j('the config has "client_sec', 'ret": "abcdefgh12345678"'): "abcdefgh12345678",
+            j("STRIPE_", "KEY=rk_ab", "cdefgh12345678 here"): "rk_abcdefgh12345678",
+            j("Authorization: Bearer ", "abcdefgh12345678xyz"): "abcdefgh12345678xyz",
+            j("my glm key is ", "01234567", "89abcdef" "01234567", "89abcdef", ".AbCdEfGh12345678 ok"): "AbCdEfGh12345678",
+            j("token glpat", "-", "AbCdEfGhIj" * 2, " here"): "AbCdEfGhIj",
+            j("aws AS", "IA", "ABCDEFGHIJKLMNOP leak"): "ABCDEFGHIJKLMNOP",
+            j("stripe sk_li", "ve_", "AbCdEfGhIjK" * 2, " here"): "AbCdEfGhIjK",
+            j("slack xa", "pp-1-A0123-4567-abcdef here"): "A0123-4567",
+            j("hf", "_", "AbCdEfGhIjKlMnOpQ" * 2, " here"): "AbCdEfGhIjKlMnOpQ",
+            j("secret wJalrXUtnFEMI/K7MDENG", "/bPxRfiCYEXAMPLEKEY here"): "wJalrXUtnFEMI",
+            j("-----BEGIN RSA PRIVATE ", "KEY----- MIIEowIBAAKCAQEAabcdefghij"): "MIIEowIBAAKCAQEA",
+        }
+        for raw, secret in cases.items():
+            self.assertNotIn(secret, m.redact(raw), raw)
+
+    def test_everyday_words_next_to_a_colon_survive(self):
+        for raw in [
+            "tokens: understanding how BPE splits words is hard",
+            "the key: understanding the problem before coding",
+            "max_tokens=320 is enough for the reply",
+            "bearer authentication is the default in this framework",
+            "src/components/HeaderNavBar/index.tsx is where the bug is",
+        ]:
+            self.assertEqual(m.redact(raw), raw)
+
+    def test_redaction_stays_fast_on_long_runs(self):
+        """A rule starting at \\b retried every position of a long _-_- run:
+        8000 characters took over 4 seconds."""
+        import time
+        for text in ("_-" * 4000 + "x", "a-" * 4000 + "key", "token_" * 1300 + "="):
+            t0 = time.perf_counter()
+            m.redact(text)
+            self.assertLess(time.perf_counter() - t0, 2.0, text[:12])
+
+    def test_redaction_happens_before_the_400_char_cut(self):
+        """The prose is cut to MAX_PROSE_CHARS. Redacting after the cut let the
+        first half of a key through: too short to match any rule."""
+        filler = "please check why the login keeps failing on the staging server " * 6
+        key = "sk-abcdefghijklmnopqrstuvwxyz123456"
+        head = filler[:m.MAX_PROSE_CHARS - 14]
+        prose, _ = m.gate({"prompt": head + " " + key + " thanks a lot"})
+        self.assertNotIn("abcdefghij", prose)
+
     def test_harmless_things_survive(self):
         """git hashes and UUIDs are kept: they are context, not secrets."""
         for raw in [
@@ -934,6 +1059,29 @@ class StatusLine(unittest.TestCase):
             self.assertNotIn("late", out)
 
 
+class ChainedShell(unittest.TestCase):
+    """Your old status line is run through bash, like Claude Code does."""
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_wsl_launcher_is_never_chosen(self):
+        """Depending on how Claude Code was started, PATH can put the WSL launcher
+        C:\\Windows\\System32\\bash.exe first. It runs the command inside Linux or
+        prints a UTF-16 error into the status line."""
+        sl = load(STATUSLINE, "statusline_find_bash")
+        wsl = r"C:\Windows\System32\bash.exe"
+        saved_which, saved_env = sl.shutil.which, os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+        try:
+            sl.shutil.which = lambda name: wsl if name == "bash" else saved_which(name)
+            os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = wsl
+            chosen = sl.find_bash()
+        finally:
+            sl.shutil.which = saved_which
+            os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
+            if saved_env is not None:
+                os.environ["CLAUDE_CODE_GIT_BASH_PATH"] = saved_env
+        self.assertTrue(chosen is None or "system32" not in chosen.lower(), chosen)
+
+
 class Installer(unittest.TestCase):
     def setUp(self):
         self.inst = load(INSTALLER, "en_coach_install")
@@ -1032,6 +1180,53 @@ class Installer(unittest.TestCase):
         """Claude Code runs hooks through Git Bash on Windows; backslashes break there."""
         cmd = self.inst.build_command(r"C:\Python\python.exe", pathlib.PureWindowsPath(r"C:\Users\a\x.py"))
         self.assertNotIn("\\", cmd)
+
+    def test_hand_written_windows_path_is_recognised_as_ours(self):
+        """Otherwise the installer saves its own status line as "yours" and the
+        status line then runs itself until the timeout kills it."""
+        cmd = r"py C:\Users\a\.claude\english-coach\statusline-tip.py"
+        self.assertTrue(self.inst.is_ours(cmd, "statusline-tip.py"))
+        self.settings.write_text(json.dumps({"statusLine": {"type": "command", "command": cmd}}),
+                                 encoding="utf-8")
+        self.run_installer()
+        self.assertFalse((self.tmp / "english-coach" / "chained-statusline.json").exists())
+
+    def test_key_in_settings_env_is_found(self):
+        """The README says the key can go in settings.json's env block; the
+        installer then still told you to add one."""
+        import contextlib
+        import io
+        saved = {k: os.environ.pop(k, None) for k in ("EN_COACH_API_KEY", "DEEPSEEK_API_KEY",
+                                                      "EN_COACH_BASE_URL")}
+        try:
+            for env, nagged in [({}, True), ({"DEEPSEEK_API_KEY": "sk-x"}, False)]:
+                self.settings.write_text(json.dumps({"env": env}), encoding="utf-8")
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.inst.main(["--claude-dir", str(self.tmp), "--python", "/usr/bin/python3"])
+                self.assertEqual("One more step" in out.getvalue(), nagged, env)
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_virtualenv_python_is_not_written_into_settings(self):
+        """Run from a project's .venv, the installer wrote that venv's python into
+        the global settings.json; delete the venv and the status line breaks in
+        every project."""
+        import venv
+        env_dir = self.tmp / "project-venv"
+        venv.EnvBuilder(with_pip=False, symlinks=os.name != "nt").create(env_dir)
+        py = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        r = subprocess.run([str(py), "-B", "-c",
+                            "import importlib.util,sys; s=importlib.util.spec_from_file_location"
+                            "('i', sys.argv[1]); i=importlib.util.module_from_spec(s); "
+                            "s.loader.exec_module(i); print(i.base_interpreter())", str(INSTALLER)],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        chosen = r.stdout.strip()
+        self.assertTrue(pathlib.Path(chosen).is_file(), chosen)
+        self.assertFalse(os.path.abspath(chosen).startswith(os.path.abspath(env_dir)), chosen)
 
     def test_paths_are_not_expanded_by_the_shell(self):
         """Single-quoted, so a $ or backtick in a path stays literal."""
@@ -1138,6 +1333,26 @@ class Plugin(unittest.TestCase):
         r = subprocess.run([bash, str(script), "-c", "import sys; print(sys.version_info[0])"],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.stdout.strip(), "3", r.stderr)
+
+    def test_python_finder_skips_a_broken_python(self):
+        """A stale pyenv shim or an old python first on PATH was exec'd blindly:
+        every prompt then failed, and the real Python 3 after it was never tried."""
+        import shutil
+        bash = shutil.which("bash")
+        if not bash or os.name == "nt":
+            self.skipTest("POSIX PATH handling")
+        fake = pathlib.Path(tempfile.mkdtemp())
+        try:
+            shim = fake / "python3"
+            shim.write_text("#!/bin/sh\necho 'pyenv: python3: command not found' >&2\nexit 127\n")
+            shim.chmod(0o755)
+            env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
+            r = subprocess.run([bash, str(ROOT / "hooks" / "run-python.sh"), "-c",
+                                "import sys; print(sys.version_info[0])"],
+                               capture_output=True, text=True, timeout=60, env=env)
+            self.assertEqual(r.stdout.strip(), "3", r.stderr)
+        finally:
+            shutil.rmtree(fake, ignore_errors=True)
 
 
 if __name__ == "__main__":

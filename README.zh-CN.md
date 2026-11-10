@@ -98,7 +98,7 @@ export DEEPSEEK_API_KEY=sk-...
 
 卸载：`/en-coach:setup remove`（或 `python3 ~/.claude/english-coach/install.py --uninstall`）把原来的状态栏放回去；用的是插件的话再 `claude plugin uninstall en-coach`。错题本会留着。
 
-没出提示？hook 出错时故意不吭声，所以手动检查一下：
+没出提示？hook 出错时故意不吭声，所以手动检查一下（插件用户：跑过 `/en-coach:setup` 才有这个文件，提示找不到文件就先跑它）：
 
 ```sh
 python3 ~/.claude/english-coach/en-coach.py --check     # Windows 用 py
@@ -119,7 +119,7 @@ python3 ~/.claude/english-coach/en-coach.py --check     # Windows 用 py
 | `EN_COACH_EXTRA_BODY` | | 合并进请求的 JSON，用来设各家自己的开关，比如关掉"思考"；值写 `null` 表示删掉这个字段。各家该填什么见下表 |
 | `EN_COACH_NATIVE_LANGUAGE` | `zh` | 你的母语：`zh` 中文；**测试版**：`ja` 日语、`ko` 韩语、`es` 西班牙语 |
 | `EN_COACH_LOG` | `1` | 设成 `0` 就不记错题本 |
-| `EN_COACH_DATA_DIR` | `~/.claude/english` | 提示和错题本存哪 |
+| `EN_COACH_DATA_DIR` | `~/.claude/english`（设了 `CLAUDE_CONFIG_DIR` 就是它下面的 `english`） | 提示和错题本存哪 |
 
 选快的模型：你还盯着刚发的消息时提示就出来，才有用。
 
@@ -173,7 +173,7 @@ export EN_COACH_API_KEY=sk-...
 
 **会影响 Claude 的回答吗？** 不会。hook 不往标准输出写任何东西，状态栏也不会发给模型。
 
-**会把什么发给 API？** 你这条消息里去掉代码、日志之后的文字部分，最多 400 个字符。别的都不发：不发你的文件，也不发 Claude 的回答。看起来像密钥的内容（API key、token、`password is ...`、网址里的 `用户:密码@`、`key = value` 这类赋值、`密码是 ...`）在发送和写错题本之前都会打码。这只是尽力而为，不是保证，别往 prompt 里贴密钥。
+**会把什么发给 API？** 你这条消息里的文字部分，最多 400 个字符。``` 围起来的代码块、看着像代码、日志、命令或报错堆栈的行会先被过滤掉；过滤是逐行判断、尽力而为，写得像句子的代码行仍可能混进去。别的都不发：不发你的文件，也不发 Claude 的回答。看起来像密钥的内容（常见格式的 API key 和 token、`Bearer ...`、`password is ...`、网址里的 `用户:密码@`、`API_KEY=...`、`db_password: ...` 这类赋值、私钥、`密码是 ...`）在发送和写错题本之前都会打码。这同样只是尽力而为，不是保证，别往 prompt 里贴密钥。
 
 **慢吗？** hook 在后台跑。按回车后 1 到 6 秒出提示：模型约 1 秒，状态栏最多再等 5 秒刷新。别把 `refreshInterval` 调到 5 以下，原因见 lessons 文档。
 
