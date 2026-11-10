@@ -98,8 +98,10 @@ no context, quality was the same or better.
 5. **Your pasted screen fed last turn's tip back in.** Paste your terminal to ask a
    question and the model saw `✎ latter → later`, repeated it, and skipped the new
    mistakes. Lines starting with the tool's own symbols are filtered.
-6. **Secrets in prompts landed in the log.** The log keeps 300 characters of
-   context; known key formats are redacted before writing.
+6. **Secrets in prompts landed in the log, and went to the API.** The log keeps
+   300 characters of context, and masking was first applied only there. Known
+   key formats, `user:pass@` URLs and "password is ..." are now masked before the
+   text is sent and again before anything is written.
 7. **A useless rewrite took the only slot.** Quotas were counted before
    de-duplication, so a rewrite that was later deleted blocked a good one behind it.
 8. **The same correction showed twice.** The model put a rewrite that only

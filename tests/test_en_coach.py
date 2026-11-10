@@ -540,6 +540,8 @@ class Redact(unittest.TestCase):
             "look at commit 8b9e34d1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
             "session 33c4830c-2060-4d61-b444-56db48d9a43a crashed",
             "we can fix it latter",
+            "the password is wrong again, can you check",
+            "数据库密码是错的，帮我看看",
         ]:
             self.assertEqual(m.redact(raw), raw)
 

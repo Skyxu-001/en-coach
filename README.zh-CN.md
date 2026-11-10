@@ -83,7 +83,8 @@ export DEEPSEEK_API_KEY=sk-...
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `EN_COACH_API_KEY` / `DEEPSEEK_API_KEY` | | API key（前一个优先） |
+| `EN_COACH_API_KEY` | | 你用的那个接口的 API key |
+| `DEEPSEEK_API_KEY` | | 只在接口是 DeepSeek 时才用，免得 DeepSeek 的 key 被发给别家。用别的接口就把它的 key 放进 `EN_COACH_API_KEY` |
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | 任何兼容 OpenAI 的接口，比如 `https://api.openai.com/v1`、`https://openrouter.ai/api/v1`，或本地 Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | 该接口上的模型名 |
 | `EN_COACH_LOG` | `1` | 设成 `0` 就不记错题本 |
@@ -93,7 +94,7 @@ export DEEPSEEK_API_KEY=sk-...
 
 ## 原理和踩过的坑
 
-工作流程图、每个设计取舍、以及一长串"不报错、只是悄悄变差"的坑（每个都有对应测试），
+工作流程图、每个设计取舍、以及一长串"不报错、只是悄悄变差"的坑（大多有对应测试），
 见英文 README 的 *How it works* 和 [docs/lessons-learned.md](docs/lessons-learned.md)。
 其中包括：我试了七种办法想让模型多教几条，全部无效。
 

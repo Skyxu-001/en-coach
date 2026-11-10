@@ -94,7 +94,8 @@ All optional, set as environment variables:
 
 | Variable | Default | |
 |---|---|---|
-| `EN_COACH_API_KEY` / `DEEPSEEK_API_KEY` | | API key (the first one wins) |
+| `EN_COACH_API_KEY` | | API key for whatever endpoint you use |
+| `DEEPSEEK_API_KEY` | | used only when the endpoint is DeepSeek, so a DeepSeek key is never sent to another provider. Using another endpoint? Put its key in `EN_COACH_API_KEY` |
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | any OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, or a local Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | model name for that endpoint |
 | `EN_COACH_LOG` | `1` | `0` to stop writing the error log |

@@ -165,8 +165,11 @@ _SECRET_SUBS = [
     # scheme://user:password@host
     (re.compile(r"\b([a-z][a-z0-9+.\-]*://[^\s:/@]+):[^\s@/]+@", re.I), r"\1:<REDACTED>@"),
     # "my password is hunter2", "密码是 hunter2"
-    (re.compile(r"(?i)\b(password|passwd|passcode|pwd)(\s+(?:is|was))\s+\S+"), r"\1\2 <REDACTED>"),
-    (re.compile(r"(密码|口令|密钥)(\s*(?:是|为|[:：]))\s*\S+"), r"\1\2<REDACTED>"),
+    # Only when the value looks like a password (has a digit or symbol), so
+    # "the password is wrong" / "密码是错的" are still coached normally.
+    (re.compile(r"(?i)\b(password|passwd|passcode|pwd)(\s+(?:is|was))\s+"
+                r"(?=[^\s]*[0-9!@#$%^&*_+=~-])[^\s,;]{4,}"), r"\1\2 <REDACTED>"),
+    (re.compile(r"(密码|口令|密钥)(\s*(?:是|为|[:：]))\s*[\x21-\x7e]{4,}"), r"\1\2<REDACTED>"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "<REDACTED-KEY>"),
     (re.compile(r"\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{20,}"), "<REDACTED-TOKEN>"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "<REDACTED-TOKEN>"),

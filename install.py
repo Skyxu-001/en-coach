@@ -226,7 +226,9 @@ def main(argv=None):
         return 0
 
     print("\nen-coach installed. Start a new Claude Code session to load the hook.")
-    if not (os.environ.get("EN_COACH_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")):
+    base_url = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com")
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY") if "deepseek.com" in base_url else None
+    if not (os.environ.get("EN_COACH_API_KEY") or deepseek_key):
         print("\nOne more step: give it an API key. Either export it in your shell profile:\n"
               "    export DEEPSEEK_API_KEY=sk-...\n"
               "or add it to the \"env\" block of settings.json. See README > Configuration.")
