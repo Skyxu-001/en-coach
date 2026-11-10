@@ -136,6 +136,7 @@ All optional, set as environment variables:
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | any OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, or a local Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | model name for that endpoint |
 | `EN_COACH_EXTRA_BODY` | | JSON merged into the request, for per-model switches such as turning thinking off; `null` removes a field. Values for each provider are in the table below |
+| `EN_COACH_NATIVE_LANGUAGE` | `zh` | your first language: `zh` Chinese, or **beta** `ja` Japanese, `ko` Korean, `es` Spanish |
 | `EN_COACH_LOG` | `1` | `0` to stop writing the error log |
 | `EN_COACH_DATA_DIR` | `~/.claude/english` | where tips and the log live |
 
@@ -208,7 +209,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 87 offline tests:
+A few things that took real debugging to get right, all covered by the 93 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
@@ -243,9 +244,13 @@ assignments) are masked before sending and before logging. That is a best
 effort, not a guarantee, so don't paste secrets into prompts.
 
 **I don't speak Chinese. Is it useful?**
-FIX and REWRITE work for anyone writing English. GAP and SAY are tuned for Chinese
-speakers. The prompt is in [`hooks/en-coach.py`](hooks/en-coach.py) if you want
-to adapt it to your language.
+FIX and REWRITE work for anyone writing English. For GAP and SAY, set
+`EN_COACH_NATIVE_LANGUAGE` to `ja`, `ko` or `es` (beta): mix your language into
+an English sentence and it teaches the English for that part, e.g.
+`the deploy está atascado` → `is stuck / is hanging`. The instructions were
+tuned on Chinese, so feedback from speakers of these languages is very welcome.
+Another language? The examples live in `NATIVE_LANGUAGES` in
+[`hooks/en-coach.py`](hooks/en-coach.py).
 
 **Is it slow?**
 The hook runs in the background. The tip appears 1 to 6 seconds after you press

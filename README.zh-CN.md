@@ -117,6 +117,7 @@ python3 ~/.claude/english-coach/en-coach.py --check     # Windows 用 py
 | `EN_COACH_BASE_URL` | `https://api.deepseek.com` | 任何兼容 OpenAI 的接口，比如 `https://api.openai.com/v1`、`https://openrouter.ai/api/v1`，或本地 Ollama `http://localhost:11434/v1` |
 | `EN_COACH_MODEL` | `deepseek-flash` | 该接口上的模型名 |
 | `EN_COACH_EXTRA_BODY` | | 合并进请求的 JSON，用来设各家自己的开关，比如关掉"思考"；值写 `null` 表示删掉这个字段。各家该填什么见下表 |
+| `EN_COACH_NATIVE_LANGUAGE` | `zh` | 你的母语：`zh` 中文；**测试版**：`ja` 日语、`ko` 韩语、`es` 西班牙语 |
 | `EN_COACH_LOG` | `1` | 设成 `0` 就不记错题本 |
 | `EN_COACH_DATA_DIR` | `~/.claude/english` | 提示和错题本存哪 |
 

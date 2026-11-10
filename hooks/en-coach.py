@@ -37,7 +37,7 @@ from pathlib import Path
 MAX_PROMPT_CHARS = 8000       # longer than this is almost always a summary or a huge paste
 MAX_PROSE_CHARS = 400         # cap on what is actually sent to the model
 MIN_CHARS, MIN_WORDS = 12, 4
-MIN_CJK = 6                   # Chinese has no spaces, so count characters instead of words
+MIN_NATIVE_CHARS = 6          # Chinese / Japanese have no spaces: count characters, not words
 MAX_ITEMS = 3                 # FIX lines kept (the display width trims again)
 MAX_GAPS = 3                  # GAP lines kept
 MAX_REWRITES = 2              # rewrite lines kept (the log keeps both; the status line shows 1)
@@ -60,27 +60,64 @@ ERRORS_FILE = DATA_DIR / "errors.jsonl"
 KINDS = {"verb-form", "countability", "article",
          "preposition", "word-choice", "spelling"}
 
-SYSTEM_PROMPT = """\
-You coach a Chinese native-speaker software engineer on English, inside their
+# Your first language: the one the GAP lines translate from. Chinese is what the
+# instructions were tuned on; the others are beta (same instructions, with
+# examples in that language). Values: zh (default), ja, ko, es.
+NATIVE_LANGUAGE_ENV = "EN_COACH_NATIVE_LANGUAGE"
+NATIVE_LANGUAGES = {
+    "zh": {"name": "Chinese", "fragment_size": "2-8 characters",
+           "skip_words": "帮我 好的 行 我想 我觉得 这个 那个 然后 但是 可以吗 是不是 谢谢\n"
+                         "   我尝试 我试了 没反应 你看 问一下",
+           "good_targets": "梳理/复现/兜底/踩坑/落地/闪退/卡住/绕过/收敛/对齐/联调",
+           "example": "普及"},
+    "ja": {"name": "Japanese", "fragment_size": "2-10 characters",
+           "skip_words": "お願い よろしく ありがとう ちょっと たぶん 思います できますか\n"
+                         "   見て 確認して やってみた 動かない すみません",
+           "good_targets": "切り分け/再現/暫定対応/ハマる/詰まる/回避/落とし込む/すり合わせ/結合テスト/巻き戻す",
+           "example": "普及させる"},
+    "ko": {"name": "Korean", "fragment_size": "2-10 characters",
+           "skip_words": "부탁해 좋아 그래서 근데 그리고 감사합니다 해줘\n"
+                         "   확인해줘 이거 저거 해봤어 안 돼 잠깐만",
+           "good_targets": "재현/우회/롤백/병목/연동 테스트/삽질/꼬이다/맞추다/수렴/땜빵",
+           "example": "보급하다"},
+    "es": {"name": "Spanish", "fragment_size": "1-4 words",
+           "skip_words": "por favor gracias vale entonces pero creo que puedes\n"
+                         "   mira a ver o sea lo intenté no funciona",
+           "good_targets": "depurar/reproducir/desplegar/parchear/cuello de botella/"
+                           "salir del paso/cuadrar/atascarse/revertir/acotar",
+           "example": "difundir"},
+}
+NATIVE_LANGUAGE_NAMES = {"chinese": "zh", "japanese": "ja", "korean": "ko", "spanish": "es"}
+
+
+def native_language():
+    """EN_COACH_NATIVE_LANGUAGE as a key of NATIVE_LANGUAGES ("zh-CN", "Japanese",
+    "es" all work). Anything else falls back to Chinese; --check reports it."""
+    raw = os.environ.get(NATIVE_LANGUAGE_ENV, "").strip().lower()
+    code = NATIVE_LANGUAGE_NAMES.get(raw, raw[:2])
+    return code if code in NATIVE_LANGUAGES else "zh"
+
+
+SYSTEM_PROMPT_TEMPLATE = """\
+You coach a {name} native-speaker software engineer on English, inside their
 terminal. Output at most 3 GAP lines, at most 3 FIX lines, and at most 2 R lines.
 
 === GAP: teach a phrase they probably cannot produce ===
-G|<Chinese fragment>|<English for THAT FRAGMENT ONLY>
+G|<{name} fragment>|<English for THAT FRAGMENT ONLY>
 
 Rules, in order of importance:
-1. The Chinese fragment MUST be SHORT: 2-8 characters. Quote it verbatim.
+1. The {name} fragment MUST be SHORT: {fragment_size}. Quote it verbatim.
 2. The English MUST render ONLY that fragment. It is a phrase, not a sentence.
    <example note="format only - NEVER copy these words into your output">
    WRONG: G|<long fragment>|<a whole translated sentence>
    RIGHT: G|<short fragment>|<a short phrase>
    </example>
 3. SKIP anything an intermediate learner already says fluently. Never teach:
-   帮我 好的 行 我想 我觉得 这个 那个 然后 但是 可以吗 是不是 谢谢
-   我尝试 我试了 没反应 你看 问一下
+   {skip_words}
 4. Prefer: vivid verbs, technical collocations, idiomatic connectors.
-   Good targets: 梳理/复现/兜底/踩坑/落地/闪退/卡住/绕过/收敛/对齐/联调
+   Good targets: {good_targets}
 5. Give 2-3 alternatives separated by " / " whenever they genuinely differ in
-   register or nuance: 普及 -> spread / popularize / get across.
+   register or nuance: {example} -> spread / popularize / get across.
    One rendering is fine when only one fits. Do NOT pad with near-duplicates.
 6. If nothing in the message clears bar 3, emit NO GAP line at all.
    Emitting nothing is correct and expected for ordinary messages.
@@ -92,8 +129,8 @@ F|<kind>|<2-5 words copied verbatim>|<those same words, corrected>
    Not just the single wrong word: give it a neighbour or two.
 2. Correct ONLY the error. NEVER change the user's meaning or word choice.
    Changing "run ..." to "test ..." is forbidden - those mean different things.
-3. The quoted words MUST be English text from the input. Never quote Chinese
-   in a FIX line - Chinese belongs in a GAP line.
+3. The quoted words MUST be English text from the input. Never quote {name}
+   in a FIX line - {name} belongs in a GAP line.
 4. <kind> must be the MOST SPECIFIC match:
    spelling      misspelled word            similiar -> similar
    verb-form     tense, agreement, modal+base, passive, gerund/infinitive
@@ -115,7 +152,7 @@ F|<kind>|<2-5 words copied verbatim>|<those same words, corrected>
 === R: same meaning, more natural English (additive) ===
 R|<span copied verbatim, 4-16 words>|<how a native engineer would put it, <=20 words>
 
-Use R when the English is GRAMMATICAL but reads as translated: Chinese word
+Use R when the English is GRAMMATICAL but reads as translated: {name} word
 order, a verb that technically works but no engineer would use, or wording so
 vague a colleague would have to ask what you meant.
 
@@ -132,6 +169,14 @@ F you would otherwise emit is NOT. The restraint in rule 5 applies to R alone.
 
 If nothing is worth teaching, output exactly: NONE
 Output only G|, F| and R| lines, nothing else."""
+
+
+def build_system_prompt(language):
+    return SYSTEM_PROMPT_TEMPLATE.format(**NATIVE_LANGUAGES[language])
+
+
+NATIVE_LANGUAGE = native_language()
+SYSTEM_PROMPT = build_system_prompt(NATIVE_LANGUAGE)
 
 # ---------- line filters ----------
 # Code keywords are matched CASE-SENSITIVELY and only when real code structure
@@ -214,11 +259,29 @@ def cjk_count(s):
     return sum(1 for c in s if "一" <= c <= "鿿")
 
 
+# Characters of each first language's own script. Spanish shares the Latin
+# alphabet with English, so it has none: nothing can tell the two apart by
+# script, and the model's instructions do that job instead.
+NATIVE_SCRIPT_RANGES = {
+    "zh": [("一", "鿿")],                                   # CJK ideographs
+    "ja": [("぀", "ゟ"), ("゠", "ヿ"),              # hiragana, katakana
+           ("一", "鿿"), ("ｦ", "ﾟ")],             # kanji, half-width kana
+    "ko": [("가", "힣"), ("ᄀ", "ᇿ"),              # Hangul syllables, jamo
+           ("㄰", "㆏")],                                   # compatibility jamo
+    "es": [],
+}
+
+
+def native_char_count(s, language=None):
+    ranges = NATIVE_SCRIPT_RANGES[language or NATIVE_LANGUAGE]
+    return sum(1 for c in s if any(lo <= c <= hi for lo, hi in ranges))
+
+
 def has_content(s):
-    """Is this long enough to be a sentence? Chinese counts characters, English
-    counts words. Using split() alone would drop a whole Chinese sentence as
-    a single "word"."""
-    return cjk_count(s) >= MIN_CJK or len(s.split()) >= MIN_WORDS
+    """Is this long enough to be a sentence? Chinese and Japanese count
+    characters, everything else counts words. Using split() alone would drop a
+    whole Chinese sentence as a single "word"."""
+    return native_char_count(s) >= MIN_NATIVE_CHARS or len(s.split()) >= MIN_WORDS
 
 
 # Log levels and command lines: CASE-SENSITIVE, and kept in their own regex.
@@ -459,7 +522,7 @@ def parse(raw, prose):
                 kind, orig, fix = "", parts[1], parts[2]
             if not orig or not fix:
                 continue
-            if cjk_count(orig):                    # Chinese belongs in GAP, not FIX
+            if native_char_count(orig):            # your language belongs in GAP, not FIX
                 continue
             if orig.lower() == fix.lower():        # case-only change: noise
                 continue
@@ -726,7 +789,7 @@ def settings_env():
 
 def check(sentence):
     """Manual self-check (not the hook path): print every step, errors included."""
-    global BASE_URL, MODEL, ENDPOINT
+    global BASE_URL, MODEL, ENDPOINT, NATIVE_LANGUAGE, SYSTEM_PROMPT
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -739,10 +802,18 @@ def check(sentence):
     BASE_URL = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com").rstrip("/")
     MODEL = os.environ.get("EN_COACH_MODEL", "deepseek-flash")
     ENDPOINT = BASE_URL + "/chat/completions"
+    NATIVE_LANGUAGE = native_language()
+    SYSTEM_PROMPT = build_system_prompt(NATIVE_LANGUAGE)
     if from_settings:
         print(f"settings  {', '.join(sorted(from_settings))} read from settings.json")
     print(f"endpoint  {ENDPOINT}")
     print(f"model     {MODEL}")
+    raw_language = os.environ.get(NATIVE_LANGUAGE_ENV, "").strip()
+    language_note = "" if NATIVE_LANGUAGE == "zh" else " (beta)"
+    if raw_language and NATIVE_LANGUAGE == "zh" and not raw_language.lower().startswith(("zh", "chinese")):
+        language_note = f" ({NATIVE_LANGUAGE_ENV}={raw_language} is not supported: " \
+                        f"use {', '.join(NATIVE_LANGUAGES)})"
+    print(f"language  {NATIVE_LANGUAGES[NATIVE_LANGUAGE]['name']}{language_note}")
     raw_extra = os.environ.get(EXTRA_BODY_ENV, "").strip()
     if raw_extra:
         if extra_body():

@@ -482,13 +482,70 @@ class ExtraBody(unittest.TestCase):
                 os.environ["EN_COACH_API_KEY"] = saved_key
 
 
+class NativeLanguage(unittest.TestCase):
+    """EN_COACH_NATIVE_LANGUAGE (beta for ja / ko / es). The Chinese instructions
+    were tuned over months on real prompts; templating must not change them."""
+
+    CHINESE_PROMPT_SHA256 = "9d5ea5fb166a9a6604aead161be54f1833774206365196c5d57faf3c6f7f02c8"
+
+    def setUp(self):
+        self.saved = os.environ.pop(m.NATIVE_LANGUAGE_ENV, None)
+
+    def tearDown(self):
+        os.environ.pop(m.NATIVE_LANGUAGE_ENV, None)
+        if self.saved is not None:
+            os.environ[m.NATIVE_LANGUAGE_ENV] = self.saved
+
+    def test_chinese_prompt_is_byte_for_byte_unchanged(self):
+        import hashlib
+        self.assertEqual(m.NATIVE_LANGUAGE, "zh")
+        self.assertEqual(hashlib.sha256(m.build_system_prompt("zh").encode()).hexdigest(),
+                         self.CHINESE_PROMPT_SHA256)
+
+    def test_other_prompts_are_complete(self):
+        for code, lang in m.NATIVE_LANGUAGES.items():
+            prompt = m.build_system_prompt(code)
+            self.assertNotIn("{", prompt, code)
+            self.assertIn(f"G|<{lang['name']} fragment>|", prompt)
+            if code != "zh":
+                self.assertNotIn("Chinese", prompt, code)
+
+    def test_setting_values(self):
+        for raw, code in [("", "zh"), ("ja", "ja"), ("Japanese", "ja"), ("ja-JP", "ja"),
+                          ("KO", "ko"), ("es_MX", "es"), ("spanish", "es"), ("zh-CN", "zh"),
+                          ("fr", "zh"), ("klingon", "zh")]:
+            os.environ[m.NATIVE_LANGUAGE_ENV] = raw
+            self.assertEqual(m.native_language(), code, raw)
+
+    def test_kana_only_sentence_is_long_enough_in_japanese(self):
+        """Counting only Chinese characters would drop a Japanese sentence written
+        mostly in kana, exactly like the old split() bug dropped Chinese."""
+        s = "これをもういちどためしてみてください"
+        self.assertGreaterEqual(m.native_char_count(s, "ja"), m.MIN_NATIVE_CHARS)
+        self.assertEqual(m.native_char_count(s, "zh"), 0)
+        self.assertEqual(m.native_char_count("이 버그 재현해보고", "ko"), 8)
+
+    def test_fix_quoting_your_language_is_dropped(self):
+        saved = m.NATIVE_LANGUAGE
+        try:
+            m.NATIVE_LANGUAGE = "ja"
+            prose = "the build is failling again, 原因を切り分けて please"
+            self.assertEqual(m.parse("F|spelling|原因を切り分けて|原因を調べて", prose), [])
+            self.assertEqual(len(m.parse("F|spelling|is failling|is failing", prose)), 1)
+            m.NATIVE_LANGUAGE = "ko"
+            self.assertEqual(m.parse("F|word-choice|꼬였어|망가졌어", "the deploy is 꼬였어 now"), [])
+        finally:
+            m.NATIVE_LANGUAGE = saved
+
+
 class SelfCheck(unittest.TestCase):
     """The hook fails silently by design, so a wrong model or a 400 used to look
     exactly like 'no mistakes'. --check shows the error instead."""
 
-    def run_check(self, base_url, key="k", script=HOOK):
+    def run_check(self, base_url, key="k", script=HOOK, **extra_env):
         env = {k: v for k, v in os.environ.items() if not k.startswith("EN_COACH_")
                and k != "DEEPSEEK_API_KEY"}
+        env.update(extra_env)
         home = tempfile.mkdtemp()            # never read the real ~/.claude/settings.json
         self.addCleanup(lambda: __import__("shutil").rmtree(home, ignore_errors=True))
         env.update(HOME=home, USERPROFILE=home, PYTHONIOENCODING="utf-8")
@@ -538,6 +595,12 @@ class SelfCheck(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/v1"
+
+    def test_language_is_reported(self):
+        r = self.run_check("http://127.0.0.1:9/v1", key=None, EN_COACH_NATIVE_LANGUAGE="ja")
+        self.assertIn("Japanese (beta)".encode(), r.stdout)
+        r = self.run_check("http://127.0.0.1:9/v1", key=None, EN_COACH_NATIVE_LANGUAGE="fr")
+        self.assertIn(b"fr is not supported", r.stdout)
 
     def test_missing_key_is_reported(self):
         r = self.run_check("http://127.0.0.1:9/v1", key=None)
