@@ -49,11 +49,31 @@
 
 需要 Python 3.9+，和一个兼容 OpenAI 接口的模型 API key（默认 DeepSeek，[别家](#测过的模型)也行）。
 
+**装成 Claude Code 插件**（推荐）。在终端里：
+
+```sh
+claude plugin install en-coach --marketplace Skyxu-001/en-coach
+```
+
+然后在 Claude Code 里跑一次：
+
+```
+/en-coach:setup
+```
+
+插件自带 hook；`/en-coach:setup` 负责配状态栏，这一步插件自己做不了。插件更新后再跑一次。
+Claude Code 低于 2.1.275 的话，先加 marketplace：`claude plugin marketplace add Skyxu-001/en-coach`，
+再 `claude plugin install en-coach@en-coach`。
+
+**或者不用插件：**
+
 ```sh
 git clone https://github.com/Skyxu-001/en-coach.git
 cd en-coach
 python3 install.py          # Windows 用 py install.py
 ```
+
+两种方式二选一，别都装。（`/en-coach:setup` 会删掉 `install.py` 装的 hook，所以从手动安装换成插件没问题。）
 
 然后把 key 告诉它，二选一。写进 shell 配置：
 
@@ -67,15 +87,16 @@ export DEEPSEEK_API_KEY=sk-...
 { "env": { "DEEPSEEK_API_KEY": "sk-..." } }
 ```
 
-新开一个 Claude Code 会话，随便发一句话试试。安装程序会：
+新开一个 Claude Code 会话，随便发一句话试试。两种方式都会：
 
-- 把两个脚本复制到 `~/.claude/english-coach/`
-- 加一个**异步**的 `UserPromptSubmit` hook（每次发消息时在后台自动跑的脚本），不会拖慢你的消息
+- 把脚本复制到 `~/.claude/english-coach/`
+- 每条消息跑一个**异步**的 `UserPromptSubmit` hook（每次发消息时在后台自动跑的脚本），不会拖慢你的消息
 - 让状态栏显示提示；**你原来有状态栏的话会保留**，显示在提示上面
-- 改之前先备份 `settings.json`
+- 改 `settings.json` 之前先备份
 
 `python3 install.py --dry-run` 只显示会改什么，不真改。
-`python3 install.py --uninstall` 全部卸掉，只留错题本。
+
+卸载：`/en-coach:setup remove`（或 `python3 ~/.claude/english-coach/install.py --uninstall`）把原来的状态栏放回去；用的是插件的话再 `claude plugin uninstall en-coach`。错题本会留着。
 
 没出提示？hook 出错时故意不吭声，所以手动检查一下：
 

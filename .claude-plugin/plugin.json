@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "en-coach",
+  "description": "Practise English with the prompts you already type. A small model checks each prompt in the background and shows a tip in the status line; Claude never sees it. After installing, run /en-coach:setup once.",
+  "author": {
+    "name": "Sky",
+    "url": "https://github.com/Skyxu-001"
+  },
+  "homepage": "https://github.com/Skyxu-001/en-coach",
+  "repository": "https://github.com/Skyxu-001/en-coach",
+  "license": "MIT",
+  "keywords": ["english", "language-learning", "grammar", "status-line", "hooks"]
+}

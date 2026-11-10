@@ -1,0 +1,16 @@
+{
+  "description": "en-coach: coach each prompt in the background; the tip goes to a status file, never to Claude",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/run-python.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/en-coach.py\"",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

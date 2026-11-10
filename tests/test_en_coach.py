@@ -962,5 +962,104 @@ class Installer(unittest.TestCase):
             self.assertEqual(r.stdout, "/opt/py$HOME/python|/tmp/it's `here`/x.py|")
 
 
+class Plugin(unittest.TestCase):
+    """The plugin brings the hook; /en-coach:setup runs install.py --statusline-only,
+    because a plugin cannot set the status line itself."""
+
+    def setUp(self):
+        self.inst = load(INSTALLER, "en_coach_install_plugin")
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.settings = self.tmp / "settings.json"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def run_installer(self, *extra, installer=None):
+        import contextlib
+        import io
+        inst = installer or self.inst
+        with contextlib.redirect_stdout(io.StringIO()):
+            return inst.main(["--claude-dir", str(self.tmp), "--python", "/usr/bin/python3", *extra])
+
+    def read(self):
+        return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def test_statusline_only_adds_no_hook_and_removes_a_manual_one(self):
+        """A manual install plus the plugin would coach every prompt twice:
+        two API calls, every mistake logged twice, and no error anywhere."""
+        self.assertEqual(self.run_installer(), 0)                     # manual install first
+        self.assertEqual(self.run_installer("--statusline-only"), 0)  # then /en-coach:setup
+        s = self.read()
+        self.assertNotIn("hooks", s)
+        self.assertIn("statusline-tip.py", s["statusLine"]["command"])
+        for name in ("en-coach.py", "statusline-tip.py", "install.py"):
+            self.assertTrue((self.tmp / "english-coach" / name).exists(), name)
+
+    def test_copied_installer_can_uninstall_but_not_install(self):
+        """Uninstalling the plugin deletes its folder, so the way back to your old
+        status line must live in the fixed folder."""
+        self.settings.write_text(json.dumps(
+            {"statusLine": {"type": "command", "command": "my-old-statusline"}}), encoding="utf-8")
+        self.assertEqual(self.run_installer("--statusline-only"), 0)
+        copy = load(self.tmp / "english-coach" / "install.py", "en_coach_install_copy")
+        self.assertEqual(self.run_installer(installer=copy), 1)       # no hooks/ next to it
+        self.assertEqual(self.run_installer("--uninstall", installer=copy), 0)
+        self.assertEqual(self.read(), {"statusLine": {"type": "command",
+                                                      "command": "my-old-statusline"}})
+        self.assertFalse((self.tmp / "english-coach").exists())
+
+    def test_contradictory_flags_are_refused(self):
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            self.run_installer("--statusline-only", "--no-statusline")
+        self.assertFalse(self.settings.exists())
+
+    def test_claude_config_dir_is_the_default(self):
+        saved = os.environ.get("CLAUDE_CONFIG_DIR")
+        try:
+            os.environ["CLAUDE_CONFIG_DIR"] = str(self.tmp)
+            inst = load(INSTALLER, "en_coach_install_env")
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(inst.main(["--python", "/usr/bin/python3"]), 0)
+            self.assertTrue(self.settings.exists())
+        finally:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            if saved is not None:
+                os.environ["CLAUDE_CONFIG_DIR"] = saved
+
+    def test_manifests_point_at_real_files(self):
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        self.assertEqual(plugin["name"], "en-coach")
+        self.assertEqual([(p["name"], p["source"]) for p in market["plugins"]], [("en-coach", "./")])
+        self.assertNotIn("version", plugin, "a fixed version that isn't bumped hides updates; "
+                                            "without one the commit is the version")
+        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        entry = hooks["UserPromptSubmit"][0]["hooks"][0]
+        self.assertTrue(entry["async"], "a sync hook would delay every prompt")
+        for ref in ("hooks/run-python.sh", "hooks/en-coach.py"):
+            self.assertIn('"${CLAUDE_PLUGIN_ROOT}/' + ref + '"', entry["command"])
+            self.assertTrue((ROOT / ref).exists(), ref)
+        self.assertTrue((ROOT / "skills" / "setup" / "SKILL.md").exists())
+
+    def test_python_finder_runs_the_hook(self):
+        """The plugin can't know your interpreter path; run-python.sh finds one.
+        It must not keep CRLF line endings, or bash fails on Windows checkouts."""
+        import shutil
+        script = ROOT / "hooks" / "run-python.sh"
+        self.assertNotIn(b"\r\n", script.read_bytes())
+        self.assertIn("*.sh text eol=lf", (ROOT / ".gitattributes").read_text(encoding="utf-8"))
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("no bash")
+        r = subprocess.run([bash, str(script), "-c", "import sys; print(sys.version_info[0])"],
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), "3", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

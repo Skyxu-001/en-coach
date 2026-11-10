@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "en-coach",
+  "description": "en-coach: English coaching in the Claude Code status line.",
+  "owner": {
+    "name": "Sky"
+  },
+  "plugins": [
+    {
+      "name": "en-coach",
+      "source": "./",
+      "description": "Practise English with the prompts you already type; tips show in the status line and Claude never sees them. Run /en-coach:setup after installing.",
+      "homepage": "https://github.com/Skyxu-001/en-coach",
+      "license": "MIT",
+      "category": "productivity"
+    }
+  ]
+}

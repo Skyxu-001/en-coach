@@ -4,10 +4,15 @@
     python install.py              # install (or update)
     python install.py --uninstall  # remove; your error log is kept
     python install.py --dry-run    # show what would change, touch nothing
+    python install.py --statusline-only   # what /en-coach:setup runs for the plugin
 
 What it does:
-  1. copies hooks/en-coach.py and hooks/statusline-tip.py to ~/.claude/english-coach/
+  1. copies the two hooks and this installer to ~/.claude/english-coach/
+     (a fixed place: the plugin's own folder changes with every update)
   2. adds one async UserPromptSubmit hook to ~/.claude/settings.json
+     (not with --statusline-only: the plugin brings its own hook, so a hook
+     from an earlier manual install is removed instead, or every prompt would
+     be coached twice)
   3. points statusLine at statusline-tip.py; a status line you already had is
      saved and still shown above the tip, and --uninstall puts it back exactly
   4. writes a timestamped backup of settings.json before changing it
@@ -27,6 +32,7 @@ REPO_DIR = Path(__file__).resolve().parent
 INSTALL_DIR_NAME = "english-coach"
 HOOK_SCRIPT = "en-coach.py"
 STATUSLINE_SCRIPT = "statusline-tip.py"
+INSTALLER_SCRIPT = "install.py"
 CHAINED_FILE_NAME = "chained-statusline.json"
 REFRESH_INTERVAL_SECONDS = 5   # see docs/lessons-learned.md: do not go below 5
 
@@ -154,11 +160,22 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--no-statusline", action="store_true",
                     help="only add the hook; wire the tip into your own status line yourself")
-    ap.add_argument("--claude-dir", default=str(Path.home() / ".claude"),
-                    help="Claude Code config directory (default: ~/.claude)")
+    ap.add_argument("--statusline-only", action="store_true",
+                    help="only set the status line (the plugin provides the hook); "
+                         "removes a hook left by a manual install")
+    ap.add_argument("--claude-dir",
+                    default=os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"),
+                    help="Claude Code config directory (default: $CLAUDE_CONFIG_DIR or ~/.claude)")
     ap.add_argument("--python", default=sys.executable,
                     help="interpreter the hooks should run with (default: this one)")
     args = ap.parse_args(argv)
+    if args.no_statusline and args.statusline_only:
+        ap.error("--no-statusline and --statusline-only contradict each other")
+    if not args.uninstall and not (REPO_DIR / "hooks").is_dir():
+        # the copy in ~/.claude/english-coach/ is only there for --uninstall
+        print("Run install.py from the en-coach repository or plugin to install; "
+              "this copy can only --uninstall.")
+        return 1
 
     claude_dir = Path(args.claude_dir).expanduser()
     settings_path = claude_dir / "settings.json"
@@ -179,6 +196,10 @@ def main(argv=None):
     if args.uninstall:
         remove_our_hook(settings)
         uninstall_statusline(settings, chained_file, notes)
+    elif args.statusline_only:
+        remove_our_hook(settings)
+        previous_statusline = install_statusline(
+            settings, build_command(args.python, install_dir / STATUSLINE_SCRIPT))
     else:
         add_hook(settings, build_command(args.python, install_dir / HOOK_SCRIPT))
         if not args.no_statusline:
@@ -195,6 +216,7 @@ def main(argv=None):
         install_dir.mkdir(parents=True, exist_ok=True)
         for name in (HOOK_SCRIPT, STATUSLINE_SCRIPT):
             shutil.copy2(REPO_DIR / "hooks" / name, install_dir / name)
+        shutil.copy2(REPO_DIR / INSTALLER_SCRIPT, install_dir / INSTALLER_SCRIPT)
         notes.append(f"copied hooks to {install_dir}")
         if previous_statusline is not None:
             chained_file.write_text(json.dumps({"statusLine": previous_statusline}, indent=2,
@@ -222,10 +244,14 @@ def main(argv=None):
         print("  - " + n)
 
     if args.uninstall:
-        print(f"\nen-coach removed. Your error log is still in {data_dir}.")
+        print(f"\nen-coach removed. Your error log is still in {data_dir}.\n"
+              "Installed it as a plugin? Also run: claude plugin uninstall en-coach")
         return 0
 
-    print("\nen-coach installed. Start a new Claude Code session to load the hook.")
+    if args.statusline_only:
+        print("\nStatus line set; the plugin provides the hook. Start a new Claude Code session.")
+    else:
+        print("\nen-coach installed. Start a new Claude Code session to load the hook.")
     base_url = os.environ.get("EN_COACH_BASE_URL", "https://api.deepseek.com")
     deepseek_key = os.environ.get("DEEPSEEK_API_KEY") if "deepseek.com" in base_url else None
     if not (os.environ.get("EN_COACH_API_KEY") or deepseek_key):

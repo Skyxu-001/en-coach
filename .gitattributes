@@ -1,0 +1,2 @@
+# The plugin runs this with bash; a CRLF checkout on Windows would break it.
+*.sh text eol=lf

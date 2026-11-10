@@ -60,11 +60,34 @@ the lessons where I already am, and kept them out of the way:
 You need Python 3.9+ and an API key for an OpenAI-compatible chat API
 (DeepSeek by default; [other providers](#tested-models) work too).
 
+**As a Claude Code plugin** (recommended). In a terminal:
+
+```sh
+claude plugin install en-coach --marketplace Skyxu-001/en-coach
+```
+
+then, inside Claude Code, run this once:
+
+```
+/en-coach:setup
+```
+
+The plugin brings the hook. `/en-coach:setup` sets the status line, which a
+plugin can't do by itself; run it again after updating the plugin. On Claude
+Code older than 2.1.275, add the marketplace first:
+`claude plugin marketplace add Skyxu-001/en-coach`, then
+`claude plugin install en-coach@en-coach`.
+
+**Or without the plugin system:**
+
 ```sh
 git clone https://github.com/Skyxu-001/en-coach.git
 cd en-coach
 python3 install.py          # Windows: py install.py
 ```
+
+Use one way or the other, not both. (`/en-coach:setup` removes a hook left by
+`install.py`, so switching to the plugin is safe.)
 
 Then give it your key, in your shell profile:
 
@@ -78,16 +101,20 @@ or in the `env` block of `~/.claude/settings.json`:
 { "env": { "DEEPSEEK_API_KEY": "sk-..." } }
 ```
 
-Start a new Claude Code session and type something. The installer:
+Start a new Claude Code session and type something. Either way:
 
-- copies two scripts to `~/.claude/english-coach/`
-- adds one **async** `UserPromptSubmit` hook, so it never slows your prompt down
-- sets the status line to show the tip; **if you already have a status line it is
+- the scripts are copied to `~/.claude/english-coach/`
+- one **async** `UserPromptSubmit` hook runs on each prompt, so it never slows
+  your prompt down
+- the status line shows the tip; **if you already have a status line it is
   kept** and shown above the tip
-- backs up `settings.json` first
+- `settings.json` is backed up before it is changed
 
 `python3 install.py --dry-run` shows the change without making it.
-`python3 install.py --uninstall` removes everything except your error log.
+
+To remove it: `/en-coach:setup remove` (or `python3 ~/.claude/english-coach/install.py --uninstall`)
+puts your old status line back, then `claude plugin uninstall en-coach` if you
+used the plugin. Your error log is kept.
 
 No tip showing up? The hook fails silently on purpose, so check the setup by hand:
 
@@ -181,7 +208,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 81 offline tests:
+A few things that took real debugging to get right, all covered by the 87 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
