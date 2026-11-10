@@ -84,7 +84,7 @@ worse. When you talk to Claude in Chinese, Claude answers in Chinese, so the
 that I never used. Stripping the Chinese left only numbers and identifiers. With
 no context, quality was the same or better.
 
-## Silent failures (each has a test)
+## Silent failures (most now have a test)
 
 1. **`Let me try again` was dropped as JavaScript.** The code filter used `re.I`, so
    `Let`, `If`, `For`, `Try`, `Return`, `From` at the start of a sentence looked like

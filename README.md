@@ -119,7 +119,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 62 offline tests:
+A few things that took real debugging to get right, all covered by the 72 offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
@@ -132,7 +132,7 @@ A few things that took real debugging to get right, all covered by the 62 offlin
   Chinese prompt arrived as mojibake and nothing happened, with no error.
 
 The full list of what broke and why is in [docs/lessons-learned.md](docs/lessons-learned.md),
-including six ways I tried to make the model teach *more* that all failed.
+including seven ways I tried to make the model teach *more* that all failed.
 
 ## Optional: spell-check as you type
 
@@ -148,7 +148,10 @@ No. The hook writes nothing to stdout, and the status line is not sent to the mo
 
 **What gets sent to the API?**
 Up to 400 characters of the prose in your message, after code and logs are removed.
-Nothing else: not your files, not Claude's replies.
+Nothing else: not your files, not Claude's replies. Things that look like secrets
+(API keys and tokens, `password is ...`, `user:pass@` in URLs, `key = value`
+assignments) are masked before sending and before logging. That is a best
+effort, not a guarantee, so don't paste secrets into prompts.
 
 **I don't speak Chinese. Is it useful?**
 FIX and REWRITE work for anyone writing English. GAP and SAY are tuned for Chinese

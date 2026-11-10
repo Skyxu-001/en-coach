@@ -13,10 +13,14 @@ small list of those so they aren't marked.
 3. In `~/.claude/settings.json`:
 
    ```json
-   "spellcheck": { "enabled": true, "language": "en_US,tech" }
+   "spellcheck": { "enabled": true, "checker": "hunspell", "language": "en_US,tech" }
    ```
 
 4. Check: `hunspell -D </dev/null` should list both `en_US` and `tech`.
+
+   Set `"checker": "hunspell"` explicitly. With `"auto"`, Claude Code may pick
+   aspell first if it is installed, and aspell ignores this dictionary without
+   any error.
 
 To add words, edit `tech.dic`. **The number on the first line is the word count;
 update it when you add words.** Wherever hunspell is missing, spell-check just

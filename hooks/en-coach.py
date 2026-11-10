@@ -157,11 +157,16 @@ NOISE_RE = re.compile(r"""(
 
 
 # ---------- redaction ----------
-# errors.jsonl stores the first 300 characters of what you typed. Anything you
-# pasted, including a key, would land there, so known secret shapes are masked
-# before writing. Deliberately narrow: over-redacting destroys the context that
-# makes the log worth reviewing.
+# Applied to the text BEFORE it is sent to the API, and again to everything
+# written to errors.jsonl. Anything you paste into a prompt, including a key,
+# would otherwise leave your machine and land in the log. Deliberately narrow:
+# over-redacting destroys the context that makes the coaching useful.
 _SECRET_SUBS = [
+    # scheme://user:password@host
+    (re.compile(r"\b([a-z][a-z0-9+.\-]*://[^\s:/@]+):[^\s@/]+@", re.I), r"\1:<REDACTED>@"),
+    # "my password is hunter2", "密码是 hunter2"
+    (re.compile(r"(?i)\b(password|passwd|passcode|pwd)(\s+(?:is|was))\s+\S+"), r"\1\2 <REDACTED>"),
+    (re.compile(r"(密码|口令|密钥)(\s*(?:是|为|[:：]))\s*\S+"), r"\1\2<REDACTED>"),
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "<REDACTED-KEY>"),
     (re.compile(r"\b(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9]{20,}"), "<REDACTED-TOKEN>"),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "<REDACTED-TOKEN>"),
@@ -339,10 +344,14 @@ def gate(payload):
 
 # ---------- model call ----------
 def api_key():
-    """EN_COACH_API_KEY first, then DEEPSEEK_API_KEY. Values that are still
-    encrypted (dotenvx style "encrypted:...") are refused: sending one would
-    only get a 401 and leak the ciphertext for nothing."""
-    for name in ("EN_COACH_API_KEY", "DEEPSEEK_API_KEY"):
+    """EN_COACH_API_KEY first. DEEPSEEK_API_KEY only when the endpoint really is
+    DeepSeek: never send one provider's key to another host. Values that are
+    still encrypted (dotenvx style "encrypted:...") are refused: sending one
+    would only get a 401 and leak the ciphertext for nothing."""
+    names = ["EN_COACH_API_KEY"]
+    if "deepseek.com" in BASE_URL:
+        names.append("DEEPSEEK_API_KEY")
+    for name in names:
         k = (os.environ.get(name) or "").strip()
         if k and not k.startswith("encrypted:"):
             return k
@@ -378,11 +387,17 @@ def ask_model(prose):
 
 
 # ---------- parsing ----------
+# Model text goes straight to your terminal; strip control characters so a
+# stray escape sequence can't redraw or recolour the screen.
+_CONTROL_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+
 def parse(raw, prose):
     """Turn model output into items and drop hallucinated or empty ones."""
     items = []
     if not raw or raw.strip().upper().startswith("NONE"):
         return items
+    raw = _CONTROL_CHARS.sub("", raw)
     low = prose.lower()
     for line in raw.split("\n"):
         line = line.strip().strip("`")
@@ -598,8 +613,9 @@ def append_errors(items, session, cwd, sentence):
         name = Path(cwd).name if cwd else ""
         with ERRORS_FILE.open("a", encoding="utf-8") as f:
             for it in items:
+                fields = {k: redact(v) if isinstance(v, str) else v for k, v in it.items()}
                 rec = {"ts": ts, "session": session[:8], "cwd_name": name,
-                       "sentence": redact(sentence)[:300], **it}
+                       "sentence": redact(sentence)[:300], **fields}
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
@@ -629,12 +645,14 @@ def main():
         return
 
     got = gate(payload)
-    session = str(payload.get("session_id") or "default")
+    # The session id becomes part of a file name: keep it to safe characters.
+    session = re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or "default"))[:64]
     if got is None:
         write_status(session, "")      # clear last turn's tip
         return
 
     prose, _ratio = got
+    prose = redact(prose)              # secrets never leave the machine
     os.environ["EN_COACH_RUNNING"] = "1"
     try:
         raw = ask_model(prose)

@@ -391,6 +391,17 @@ class ApiKeyAndProvider(unittest.TestCase):
         os.environ["DEEPSEEK_API_KEY"] = "b"
         self.assertEqual(m.api_key(), "b")
 
+    def test_deepseek_key_never_sent_to_another_provider(self):
+        os.environ["DEEPSEEK_API_KEY"] = "b"
+        saved = m.BASE_URL
+        try:
+            m.BASE_URL = "http://localhost:11434/v1"
+            self.assertIsNone(m.api_key())
+            os.environ["EN_COACH_API_KEY"] = "local"
+            self.assertEqual(m.api_key(), "local")
+        finally:
+            m.BASE_URL = saved
+
     def test_ciphertext_is_refused(self):
         os.environ["EN_COACH_API_KEY"] = "encrypted:BAD"
         self.assertIsNone(m.api_key())
@@ -424,6 +435,11 @@ class Parse(unittest.TestCase):
 
     def test_none(self):
         self.assertEqual(m.parse("NONE", "whatever text here"), [])
+
+    def test_control_characters_from_the_model_are_stripped(self):
+        """Model text is printed to your terminal; an escape sequence must not get through."""
+        items = m.parse("F|spelling|latter|lat\x1b[2Jer", "we can fix it latter")
+        self.assertEqual(items[0]["fix"], "lat[2Jer")
 
     def test_rewrite_parsed(self):
         prose = "I need to do a small report on our team's standup meeting"
@@ -487,8 +503,36 @@ class Redact(unittest.TestCase):
             "AKIAIOSFODNN7EXAMPLE",
             "api_key = supersecretvalue123",
             "password: hunter2hunter2",
+            "my password is hunter2xyz99",
+            "connect to postgres://admin:S3cretPass@db.internal:5432/app",
+            "数据库密码是 Abc12345 你帮我连一下",
         ]:
-            self.assertIn("REDACTED", m.redact(raw), raw)
+            out = m.redact(raw)
+            self.assertIn("REDACTED", out, raw)
+            for leaked in ("hunter2", "S3cretPass", "Abc12345", "supersecret"):
+                self.assertNotIn(leaked, out, raw)
+
+    def test_secrets_are_redacted_before_the_api_call(self):
+        """The model must never receive a pasted secret, not just the log."""
+        sent = []
+        saved_ask, saved_dir = m.ask_model, m.DATA_DIR
+        payload = {"prompt": "can you check why login fails? my password is hunter2xyz99 btw",
+                   "session_id": "redact-probe"}
+        try:
+            m.ask_model = lambda prose: sent.append(prose) or "NONE"
+            m.DATA_DIR = pathlib.Path(tempfile.mkdtemp())
+            import io
+            saved_stdin = sys.stdin
+            sys.stdin = io.TextIOWrapper(io.BytesIO(json.dumps(payload).encode()), encoding="utf-8")
+            try:
+                m.main()
+            finally:
+                sys.stdin = saved_stdin
+        finally:
+            m.ask_model, m.DATA_DIR = saved_ask, saved_dir
+            os.environ.pop("EN_COACH_RUNNING", None)
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn("hunter2", sent[0])
 
     def test_harmless_things_survive(self):
         """git hashes and UUIDs are kept: they are context, not secrets."""
@@ -522,6 +566,12 @@ class ErrorLog(unittest.TestCase):
         self.assertNotIn("sk-abc", rec["sentence"])
         self.assertEqual(rec["cwd_name"], "project")
         self.assertEqual(rec["session"], "abcdef12")
+
+    def test_every_logged_field_is_redacted(self):
+        items = [{"type": "fix", "kind": "word-choice",
+                  "orig": "token ghp_abcdefghijklmnopqrstuvwxyz1234567890", "fix": "x"}]
+        m.append_errors(items, "s", "", "short")
+        self.assertNotIn("ghp_abc", m.ERRORS_FILE.read_text(encoding="utf-8"))
 
     def test_log_can_be_turned_off(self):
         os.environ["EN_COACH_LOG"] = "0"
@@ -588,12 +638,22 @@ class Contract(unittest.TestCase):
 
 
 class StatusLine(unittest.TestCase):
-    def run_statusline(self, data_dir, session="s1", columns=None):
+    """The installed script lives in its own folder with chained-statusline.json
+    next to it; each test builds that layout in a temp dir."""
+
+    def run_statusline(self, data_dir, session="s1", columns=None, chained=None):
+        import shutil
+        script_dir = pathlib.Path(data_dir) / "install"
+        script_dir.mkdir(exist_ok=True)
+        shutil.copy2(STATUSLINE, script_dir / STATUSLINE.name)
+        if chained:
+            (script_dir / "chained-statusline.json").write_text(
+                json.dumps({"statusLine": {"type": "command", "command": chained}}))
         env = dict(os.environ, EN_COACH_DATA_DIR=str(data_dir))
         env.pop("COLUMNS", None)
         if columns:
             env["COLUMNS"] = str(columns)
-        r = subprocess.run([sys.executable, "-B", str(STATUSLINE)],
+        r = subprocess.run([sys.executable, "-B", str(script_dir / STATUSLINE.name)],
                            input=json.dumps({"session_id": session}).encode(),
                            capture_output=True, env=env, timeout=30)
         return r.stdout.decode("utf-8")
@@ -613,8 +673,21 @@ class StatusLine(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = pathlib.Path(d)
             (d / "status-s1.txt").write_text("tip line", encoding="utf-8")
-            (d / "chained-statusline.txt").write_text("echo my-old-statusline")
-            self.assertEqual(self.run_statusline(d), "my-old-statusline\ntip line\n")
+            self.assertEqual(self.run_statusline(d, chained="echo my-old-statusline"),
+                             "my-old-statusline\ntip line\n")
+
+    def test_slow_chained_statusline_is_cut_off(self):
+        """A slow old status line must not hang ours (a hung status line piles up
+        processes). On Windows, killing only bash left a child holding the pipe."""
+        import time
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            (d / "status-s1.txt").write_text("tip line", encoding="utf-8")
+            t0 = time.monotonic()
+            out = self.run_statusline(d, chained="echo early; sleep 15; echo late")
+            self.assertLess(time.monotonic() - t0, 10)
+            self.assertTrue(out.endswith("tip line\n"), out)
+            self.assertNotIn("late", out)
 
 
 class Installer(unittest.TestCase):
@@ -666,22 +739,46 @@ class Installer(unittest.TestCase):
         cmds = [h["command"] for g in s["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
         self.assertIn("echo hi", cmds)
         self.assertEqual(s["statusLine"]["padding"], 1)
-        chained = self.tmp / "english" / "chained-statusline.txt"
-        self.assertEqual(chained.read_text(), "my-statusline --fancy")
+        chained = self.tmp / "english-coach" / "chained-statusline.json"
+        self.assertEqual(json.loads(chained.read_text())["statusLine"], original["statusLine"])
         self.assertTrue(list(self.tmp.glob("settings.json.en-coach-backup-*")))
 
         self.run_installer()          # running twice must not duplicate anything
         s = self.read()
         cmds = [h["command"] for g in s["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
         self.assertEqual(sum("en-coach.py" in c for c in cmds), 1)
-        self.assertEqual(chained.read_text(), "my-statusline --fancy",
+        self.assertEqual(json.loads(chained.read_text())["statusLine"], original["statusLine"],
                          "second run must not chain our own status line")
 
         self.run_installer("--uninstall")
-        s = self.read()
-        self.assertEqual(s["statusLine"]["command"], "my-statusline --fancy")
-        self.assertEqual(s["hooks"]["UserPromptSubmit"],
-                         original["hooks"]["UserPromptSubmit"])
+        self.assertEqual(self.read(), original, "uninstall must restore settings exactly")
+
+    def test_hooks_with_a_similar_name_are_left_alone(self):
+        theirs = {"hooks": {"UserPromptSubmit": [
+            {"matcher": "", "hooks": [{"type": "command", "command": "python ~/bin/open-coach.py"}]}]}}
+        self.settings.write_text(json.dumps(theirs), encoding="utf-8")
+        self.run_installer()
+        self.run_installer("--uninstall")
+        self.assertEqual(self.read(), theirs)
+
+    def test_settings_with_bom_are_read(self):
+        self.settings.write_bytes(b"\xef\xbb\xbf" + json.dumps({"model": "opus"}).encode())
+        self.assertEqual(self.run_installer(), 0)
+        self.assertEqual(self.read()["model"], "opus")
+
+    def test_odd_settings_shape_is_refused_cleanly(self):
+        for bad in ([1, 2], {"hooks": []}, {"hooks": {"UserPromptSubmit": ["x"]}},
+                    {"statusLine": "fancy"}):
+            raw = json.dumps(bad)
+            self.settings.write_text(raw, encoding="utf-8")
+            self.assertEqual(self.run_installer(), 1, raw)
+            self.assertEqual(self.settings.read_text(encoding="utf-8"), raw, "must not write")
+
+    def test_non_numeric_refresh_interval(self):
+        self.settings.write_text(json.dumps(
+            {"statusLine": {"type": "command", "command": "x", "refreshInterval": "fast"}}))
+        self.assertEqual(self.run_installer(), 0)
+        self.assertEqual(self.read()["statusLine"]["refreshInterval"], 5)
 
     def test_dry_run_writes_nothing(self):
         self.run_installer("--dry-run")
@@ -691,6 +788,13 @@ class Installer(unittest.TestCase):
         """Claude Code runs hooks through Git Bash on Windows; backslashes break there."""
         cmd = self.inst.build_command(r"C:\Python\python.exe", pathlib.PureWindowsPath(r"C:\Users\a\x.py"))
         self.assertNotIn("\\", cmd)
+
+    def test_paths_are_not_expanded_by_the_shell(self):
+        """Single-quoted, so a $ or backtick in a path stays literal."""
+        cmd = self.inst.build_command("/opt/py$HOME/python", "/tmp/it's `here`/x.py")
+        r = subprocess.run(["bash", "-c", f"printf '%s|' {cmd}"], capture_output=True, text=True)
+        if r.returncode == 0:
+            self.assertEqual(r.stdout, "/opt/py$HOME/python|/tmp/it's `here`/x.py|")
 
 
 if __name__ == "__main__":

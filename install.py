@@ -9,7 +9,7 @@ What it does:
   1. copies hooks/en-coach.py and hooks/statusline-tip.py to ~/.claude/english-coach/
   2. adds one async UserPromptSubmit hook to ~/.claude/settings.json
   3. points statusLine at statusline-tip.py; a status line you already had is
-     kept and still shown above the tip
+     saved and still shown above the tip, and --uninstall puts it back exactly
   4. writes a timestamped backup of settings.json before changing it
 
 It never writes your API key anywhere.
@@ -24,9 +24,15 @@ from datetime import datetime
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parent
-HOOK_MARKER = "en-coach.py"
-STATUSLINE_MARKER = "statusline-tip.py"
+INSTALL_DIR_NAME = "english-coach"
+HOOK_SCRIPT = "en-coach.py"
+STATUSLINE_SCRIPT = "statusline-tip.py"
+CHAINED_FILE_NAME = "chained-statusline.json"
 REFRESH_INTERVAL_SECONDS = 5   # see docs/lessons-learned.md: do not go below 5
+
+
+class SettingsShapeError(Exception):
+    pass
 
 
 def posix(p):
@@ -34,15 +40,47 @@ def posix(p):
     return str(p).replace("\\", "/")
 
 
+def sh_quote(s):
+    """Single quotes: nothing inside is expanded by the shell ($, backticks...)."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 def build_command(python_exe, script):
-    return f'"{posix(python_exe)}" "{posix(script)}"'
+    return f"{sh_quote(posix(python_exe))} {sh_quote(posix(script))}"
+
+
+def is_ours(command, script_name):
+    """Exact match on our installed script, so a hook that merely contains the
+    same file name (say ~/bin/open-coach.py) is never touched."""
+    c = str(command or "").strip().strip("'\"")
+    return c.endswith(f"{INSTALL_DIR_NAME}/{script_name}")
 
 
 def load_settings(path):
     if not path.exists():
         return {}
-    text = path.read_text(encoding="utf-8")
-    return json.loads(text) if text.strip() else {}
+    text = path.read_text(encoding="utf-8-sig")      # tolerate a BOM from Windows editors
+    data = json.loads(text) if text.strip() else {}
+    check_shape(data)
+    return data
+
+
+def check_shape(s):
+    if not isinstance(s, dict):
+        raise SettingsShapeError("the top level is not a JSON object")
+    hooks = s.get("hooks")
+    if hooks is not None:
+        if not isinstance(hooks, dict):
+            raise SettingsShapeError('"hooks" is not an object')
+        groups = hooks.get("UserPromptSubmit")
+        if groups is not None:
+            if not isinstance(groups, list) or not all(isinstance(g, dict) for g in groups):
+                raise SettingsShapeError('"hooks.UserPromptSubmit" is not a list of objects')
+            for g in groups:
+                if not isinstance(g.get("hooks", []), list):
+                    raise SettingsShapeError('a UserPromptSubmit group has a non-list "hooks"')
+    if s.get("statusLine") is not None and not isinstance(s["statusLine"], dict):
+        raise SettingsShapeError('"statusLine" is not an object')
 
 
 def remove_our_hook(settings):
@@ -50,10 +88,11 @@ def remove_our_hook(settings):
     groups = hooks.get("UserPromptSubmit") or []
     kept_groups = []
     for group in groups:
-        entries = [h for h in (group.get("hooks") or [])
-                   if HOOK_MARKER not in str(h.get("command", ""))]
-        if entries:
-            kept_groups.append(dict(group, hooks=entries))
+        entries = group.get("hooks") or []
+        kept = [h for h in entries
+                if not (isinstance(h, dict) and is_ours(h.get("command"), HOOK_SCRIPT))]
+        if kept or not entries:
+            kept_groups.append(dict(group, hooks=kept) if entries else group)
     if kept_groups:
         hooks["UserPromptSubmit"] = kept_groups
     elif "UserPromptSubmit" in hooks:
@@ -71,18 +110,23 @@ def add_hook(settings, command):
         {"hooks": [{"type": "command", "command": command, "async": True}]})
 
 
+def refresh_seconds(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def install_statusline(settings, command):
-    """Point statusLine at our script. Returns the command of the status line you
-    had before (to be chained), or "" if there was none or it was already ours."""
+    """Point statusLine at our script. Returns the status line you had before,
+    to be saved and restored later, or None if there was none or it was ours."""
     current = settings.get("statusLine")
-    previous = ""
-    if isinstance(current, dict) and STATUSLINE_MARKER in str(current.get("command", "")):
-        pass
-    elif isinstance(current, dict) and current.get("type") == "command" and current.get("command"):
-        previous = current["command"]
+    previous = None
+    if isinstance(current, dict) and not is_ours(current.get("command"), STATUSLINE_SCRIPT):
+        previous = dict(current)
     new = dict(current) if isinstance(current, dict) else {}
     new.update({"type": "command", "command": command,
-                "refreshInterval": max(int(new.get("refreshInterval") or 0),
+                "refreshInterval": max(refresh_seconds(new.get("refreshInterval")),
                                        REFRESH_INTERVAL_SECONDS)})
     settings["statusLine"] = new
     return previous
@@ -90,13 +134,15 @@ def install_statusline(settings, command):
 
 def uninstall_statusline(settings, chained_file, notes):
     current = settings.get("statusLine")
-    if not (isinstance(current, dict) and STATUSLINE_MARKER in str(current.get("command", ""))):
+    if not (isinstance(current, dict) and is_ours(current.get("command"), STATUSLINE_SCRIPT)):
         return
-    previous = ""
-    if chained_file.exists():
-        previous = chained_file.read_text(encoding="utf-8").strip()
-    if previous:
-        current["command"] = previous
+    previous = None
+    try:
+        previous = json.loads(chained_file.read_text(encoding="utf-8")).get("statusLine")
+    except Exception:
+        pass
+    if isinstance(previous, dict):
+        settings["statusLine"] = previous
         notes.append("restored your previous status line")
     else:
         del settings["statusLine"]
@@ -116,28 +162,28 @@ def main(argv=None):
 
     claude_dir = Path(args.claude_dir).expanduser()
     settings_path = claude_dir / "settings.json"
-    install_dir = claude_dir / "english-coach"
-    data_dir = claude_dir / "english"
-    chained_file = data_dir / "chained-statusline.txt"
+    install_dir = claude_dir / INSTALL_DIR_NAME
+    chained_file = install_dir / CHAINED_FILE_NAME
+    data_dir = Path(os.environ.get("EN_COACH_DATA_DIR") or (claude_dir / "english"))
     notes = []
 
     try:
         settings = load_settings(settings_path)
-    except json.JSONDecodeError as e:
-        print(f"Cannot parse {settings_path}: {e}\nFix the JSON first; nothing was changed.")
+    except (json.JSONDecodeError, SettingsShapeError) as e:
+        print(f"Cannot use {settings_path}: {e}\nNothing was changed. Fix the file, or add the "
+              "hook by hand (see README > Install).")
         return 1
     before = json.dumps(settings, indent=2, ensure_ascii=False)
 
+    previous_statusline = None
     if args.uninstall:
         remove_our_hook(settings)
         uninstall_statusline(settings, chained_file, notes)
     else:
-        hook_cmd = build_command(args.python, install_dir / "en-coach.py")
-        add_hook(settings, hook_cmd)
-        chained_command = ""
+        add_hook(settings, build_command(args.python, install_dir / HOOK_SCRIPT))
         if not args.no_statusline:
-            status_cmd = build_command(args.python, install_dir / "statusline-tip.py")
-            chained_command = install_statusline(settings, status_cmd)
+            previous_statusline = install_statusline(
+                settings, build_command(args.python, install_dir / STATUSLINE_SCRIPT))
 
     after = json.dumps(settings, indent=2, ensure_ascii=False)
 
@@ -147,19 +193,20 @@ def main(argv=None):
 
     if not args.uninstall:
         install_dir.mkdir(parents=True, exist_ok=True)
-        for name in ("en-coach.py", "statusline-tip.py"):
+        for name in (HOOK_SCRIPT, STATUSLINE_SCRIPT):
             shutil.copy2(REPO_DIR / "hooks" / name, install_dir / name)
         notes.append(f"copied hooks to {install_dir}")
-        if chained_command:
-            data_dir.mkdir(parents=True, exist_ok=True)
-            chained_file.write_text(chained_command, encoding="utf-8")
-            notes.append(f"kept your status line; it now runs from {chained_file}")
+        if previous_statusline is not None:
+            chained_file.write_text(json.dumps({"statusLine": previous_statusline}, indent=2,
+                                               ensure_ascii=False), encoding="utf-8")
+            notes.append("kept your status line; it is shown above the tip")
     else:
         if install_dir.exists():
             shutil.rmtree(install_dir)
             notes.append(f"removed {install_dir}")
-        if chained_file.exists():
-            chained_file.unlink()
+        for pattern in ("status-*.txt", "width-*.txt"):
+            for f in data_dir.glob(pattern):
+                f.unlink(missing_ok=True)
 
     if after != before:
         claude_dir.mkdir(parents=True, exist_ok=True)
