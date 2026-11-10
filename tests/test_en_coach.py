@@ -826,8 +826,8 @@ class Contract(unittest.TestCase):
 
     def test_data_dir_follows_claude_config_dir(self):
         """With CLAUDE_CONFIG_DIR set, the hook and the status line must use the
-        same data folder the installer reports: <config dir>/english. The hook
-        used to keep writing to ~/.claude/english, so tips never showed."""
+        same data folder the installer reports: <config dir>/english. Both used
+        to keep writing to ~/.claude/english, outside the config dir."""
         with tempfile.TemporaryDirectory() as d:
             env = {k: v for k, v in os.environ.items() if k != "EN_COACH_DATA_DIR"}
             env["CLAUDE_CONFIG_DIR"] = d
