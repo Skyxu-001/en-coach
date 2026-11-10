@@ -223,17 +223,26 @@ NOISE_RE = re.compile(r"""(
 # would otherwise leave your machine and land in the log. Deliberately narrow:
 # over-redacting destroys the context that makes the coaching useful.
 _SECRET_SUBS = [
-    # scheme://user:password@host
-    (re.compile(r"\b([a-z][a-z0-9+.\-]*://[^\s:/@]+):[^\s@/]+@", re.I), r"\1:<REDACTED>@"),
-    # "my password is hunter2", "密码是 hunter2"
-    # Only when the value looks like a password (has a digit or symbol), so
-    # "the password is wrong" / "密码是错的" are still coached normally.
-    (re.compile(r"(?i)\b(password|passwd|passcode|pwd)(\s+(?:is|was))\s+"
-                r"(?=[^\s]*[0-9!@#$%^&*_+=~-])[^\s,;]{4,}"), r"\1\2 <REDACTED>"),
-    (re.compile(r"(密码|口令|密钥)(\s*(?:是|为|[:：]))\s*[\x21-\x7e]{4,}"), r"\1\2<REDACTED>"),
-    # Whole private key, or to the end of the text when the END line is missing.
-    (re.compile(r"-----BEGIN[^-\n]*PRIVATE KEY-----.*?"
-                r"(?:-----END[^-\n]*PRIVATE KEY-----|\Z)", re.S), "<REDACTED-PRIVATE-KEY>"),
+    # A whole private key, first: a rule below that masked only the BEGIN line
+    # would leave the key body unmatched. Without an END line (a half paste),
+    # up to the last base64-looking run, so a question after a bare
+    # "-----BEGIN ... PRIVATE KEY-----" header survives.
+    (re.compile(r"-----BEGIN[^-\n]*PRIVATE KEY(?: BLOCK)?-----(?:.*?-----END[^-\n]*PRIVATE KEY"
+                r"(?: BLOCK)?-----|(?:\s*[A-Za-z0-9+/=]{20,})*)", re.S), "<REDACTED-PRIVATE-KEY>"),
+    # scheme://user:password@host (the user may be empty: redis://:pw@host)
+    (re.compile(r"\b([a-z][a-z0-9+.\-]*://[^\s:/@]*):[^\s@/]+@", re.I), r"\1:<REDACTED>@"),
+    # "my password is hunter2", "password Hunter2024x" (netrc), "密码是 hunter2"
+    # Only when the value looks like a password (has a digit or a symbol other
+    # than - and !), so "the password is wrong", "the password is
+    # case-sensitive", "my password was rejected!" and "密码为 null" are still
+    # coached normally.
+    (re.compile(r"(?i)\b(password|passwd|passcode|pwd)((?:[ \t]+(?:is|was):?)?)[ \t]+"
+                r"(?=[^\s]*[0-9@#$%^&*_+=~])[^\s,;]{4,}"), r"\1\2 <REDACTED>"),
+    (re.compile(r"(密码|口令|密钥)([ \t]*(?:(?:是|为)[ \t]*[:：]?|[:：])?)[ \t]*"
+                r"(?=[\x21-\x7e]*[0-9@#$%^&*_+=~])[\x21-\x7e]{4,}"), r"\1\2<REDACTED>"),
+    # Command-line credentials: curl -u user:pw, mysql -pPASSWORD
+    (re.compile(r"(?<!\S)((?:-u|--user)[ \t=]*[^\s:]+:)[^\s]{4,}"), r"\1<REDACTED>"),
+    (re.compile(r"(?<!\S)(-p)(?=[^\s]*\d)[^\s\-][^\s]{5,}"), r"\1<REDACTED>"),
     # Known key formats, by prefix.
     (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "<REDACTED-KEY>"),
     (re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"), "<REDACTED-KEY>"),  # Stripe
@@ -249,20 +258,29 @@ _SECRET_SUBS = [
     (re.compile(r"\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b"), "<REDACTED-KEY>"),     # Zhipu GLM
     (re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),
      "<REDACTED-JWT>"),
-    # "Authorization: Bearer <token>". Needs a digit so "bearer authentication"
+    # Authorization: Basic / Token / Bearer <credentials>
+    (re.compile(r"(?i)\b(authorization[ \t]*:[ \t]*(?:basic|token|bearer)[ \t]+)"
+                r"[A-Za-z0-9._~+/\-]{8,}=*"), r"\1<REDACTED>"),
+    # "Bearer <token>" on its own. Needs a digit so "bearer authentication"
     # is still coached.
     (re.compile(r"(?i)\b(bearer)\s+(?=[A-Za-z0-9._~+/\-]*\d)[A-Za-z0-9._~+/\-]{8,}=*"),
      r"\1 <REDACTED>"),
-    # Assignments: API_KEY=..., DB_PASSWORD: ..., "client_secret": "...".
-    # The name may carry a prefix or suffix (DB_PASSWORD, AWS_SECRET_ACCESS_KEY):
-    # `_` is a word character, so a plain \bpassword\b never matched those.
-    # Prefix and suffix must be joined by _ or -, so "tokens: ..." in a sentence is left alone.
+    # Assignments: API_KEY=..., DB_PASSWORD: ..., "client_secret": "...",
+    # clientSecret: ..., PGPASSWORD=..., AccountKey=..., ?key=...
+    # The name may carry a prefix (DB_PASSWORD, dbPassword, PGPASSWORD) or a
+    # suffix joined by _ or - (AWS_SECRET_ACCESS_KEY), so "tokens: ..." in a
+    # sentence is left alone. `_` is a word character, so a plain \bpassword\b
+    # never matched those.
     # Starts only where a name starts (not \b): with \b every position inside a
     # long run of _ and - was a new start, and 8000 of them took seconds.
-    (re.compile(r"(?i)(?<![A-Za-z0-9_\-])((?:[A-Za-z0-9_\-]*[_\-])?(?:api[_\-]?key|access[_\-]?token"
-                r"|auth[_\-]?token|token|secret|password|passwd|passcode|pwd|credentials?)"
-                r"(?:[_\-][A-Za-z0-9_\-]*)?|[A-Za-z0-9]+[_\-]key)"
-                r"([\"']?\s*[:=]\s*)[\"']?[^\s\"',;&)]{8,}"), r"\1\2<REDACTED>"),
+    # The value needs a digit, or 16+ characters: "credentials: unavailable" and
+    # "hot-key: Ctrl+Shift+P" are sentences, not secrets.
+    # Same line only ([ \t], not \s): the value is never on the next line.
+    (re.compile(r"(?i)(?<![A-Za-z0-9_\-])([A-Za-z0-9_\-]*?(?:api[_\-]?key|access[_\-]?token"
+                r"|auth[_\-]?token|token|secret|password|passwd|passcode|pwd|credentials?|key)"
+                r"(?:[_\-][A-Za-z0-9_\-]*)?)"
+                r"([\"']?[ \t]*[:=][ \t]*[\"']?)"
+                r"(?=[^\s\"',;&)]*\d|[^\s\"',;&)]{16})[^\s\"',;&)]{6,}"), r"\1\2<REDACTED>"),
 ]
 # Bare high-entropy strings: 32+ chars mixing upper, lower and digits.
 # Lower-case hex (git hashes) and dashed UUIDs are left alone on purpose.
@@ -339,34 +357,66 @@ LOG_CMD_RE = re.compile(r"""(
                                                 # English words: need - / . = in the args
     | ^\s*(git|go|node|curl|ssh|brew|cargo|python3?)\s+\w[\w-]*\s+[-/]
                                                 # or subcommand + flag (git commit -m ...)
-    | ^\s*SELECT\b.*\bFROM\b                    # SQL: capitals AND its structure, so
-    | ^\s*(INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET)\b   # "Update the README" and
-    | ^\s*(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW)\b           # "Select all" stay prose
-    | ^\s*(//|/\*)                              # C-style comment lines
+    | ^\s*(//|/\*)                              # C-style comment lines: nobody starts
+                                                # their own sentence with //
 )""", re.X)                                     # note: no re.I
 
-# A Markdown code fence: everything between ``` (or ~~~) lines is code.
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+# SQL statements: only in capitals AND with their structure, so "Update the
+# README" and "Select all" stay prose. A line that also has four lower-case
+# words in a row (outside parentheses and quotes) is a sentence about the SQL
+# ("DROP TABLE is not allowed in production, how do I ...") and is kept:
+# dropping your sentence costs more than sending a line of code.
+SQL_RE = re.compile(r"""^\s*(
+      SELECT\b.*\bFROM\b
+    | (INSERT\s+INTO|DELETE\s+FROM|UPDATE\s+\w+\s+SET)\b
+    | (CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW)\b
+)""", re.X)                                     # note: no re.I
+PROSE_RUN_RE = re.compile(r"\b[a-z]+(?:[ \t]+[a-z']+){3}\b")
+SQL_PARTS_RE = re.compile(r"\([^()]*\)|'[^']*'")      # (column list), 'string': not prose
+
+# Markdown code fences, CommonMark rules: at most 3 spaces of indent; a ```
+# fence's info string has no backticks, so ```git status``` on one line is
+# inline code, not a fence; the closing line is the same character, at least
+# as long, and nothing else.
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
-def extract_prose(text):
-    """Strip logs / code / stack traces and keep natural language.
-    Returns (prose, dropped_line_count)."""
-    kept, dropped = [], 0
-    in_fence = False                   # an unclosed fence drops everything after it
-    for line in text.split("\n"):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            dropped += 1
+def fenced_line_indexes(lines):
+    """Indexes of the lines inside code fences, fence lines included. A fence
+    that is never closed runs to the end of the text, as in Markdown: sending a
+    pasted file is worse than missing a sentence after it."""
+    inside, i = set(), 0
+    while i < len(lines):
+        m = FENCE_OPEN_RE.match(lines[i])
+        if not m or (m.group(1)[0] == "`" and "`" in m.group(2)):
+            i += 1
             continue
-        if in_fence:
+        close = re.compile(r"^ {0,3}%s{%d,}\s*$" % (re.escape(m.group(1)[0]), len(m.group(1))))
+        j = i + 1
+        while j < len(lines) and not close.match(lines[j]):
+            j += 1
+        inside.update(range(i, min(j, len(lines) - 1) + 1))
+        i = j + 1
+    return inside
+
+
+def extract_prose(text, limit=MAX_PROSE_CHARS):
+    """Strip logs / code / stack traces and keep natural language.
+    Returns (prose, dropped_line_count); prose is cut to `limit` characters
+    (None: no cut)."""
+    kept, dropped = [], 0
+    lines = text.split("\n")
+    fenced = fenced_line_indexes(lines)
+    for n, line in enumerate(lines):
+        if n in fenced:
             dropped += 1
             continue
         s = line.strip()
         if not s:
             continue
-        if (CODE_RE.search(line) or NOISE_RE.search(line)
-                or LOG_CMD_RE.search(line)):
+        if (CODE_RE.search(line) or NOISE_RE.search(line) or LOG_CMD_RE.search(line)
+                or (SQL_RE.search(line)
+                    and not PROSE_RUN_RE.search(SQL_PARTS_RE.sub(" ", line)))):
             dropped += 1
             continue
         letters = sum(c.isalpha() for c in s)
@@ -374,7 +424,8 @@ def extract_prose(text):
             dropped += 1
             continue
         kept.append(s)
-    return " ".join(kept)[:MAX_PROSE_CHARS], dropped
+    prose = " ".join(kept)
+    return (prose[:limit] if limit else prose), dropped
 
 
 def cjk_ratio(text):
@@ -446,6 +497,10 @@ INJECTED_BLOCK_RE = re.compile(r"<(%s)\b[^>]*>.*?</\1>" % _INJECTED_TAGS, re.S)
 
 
 def strip_injected(prompt):
+    # No closing tag, nothing to strip. Also skips the regex on thousands of
+    # unclosed tags, where every opening tag scanned to the end (seconds).
+    if "</" not in prompt:
+        return prompt
     return INJECTED_BLOCK_RE.sub(" ", prompt)
 
 
@@ -476,9 +531,13 @@ def gate(payload):
     if len(own) > MAX_PROMPT_CHARS:
         return None
 
-    # Redact the whole text BEFORE extract_prose cuts it to MAX_PROSE_CHARS:
-    # a key cut in half by that cut no longer matches any rule.
-    prose, _ = extract_prose(redact(own))
+    # Pick the prose lines, then redact, then cut to MAX_PROSE_CHARS.
+    # Redact before the cut: a key cut in half no longer matches any rule.
+    # Pick lines before redacting: a mask changes what the line filter sees (a
+    # swallowed quote let a config line through as prose; a mask spanning a
+    # line break ate a ``` line and flipped which side of the fence was code).
+    prose, _ = extract_prose(own, limit=None)
+    prose = redact(prose)[:MAX_PROSE_CHARS]
     coachable = len(prose) >= MIN_CHARS and has_content(prose)
     if looks_injected(payload.get("transcript_path"), prompt):
         return NOT_YOURS

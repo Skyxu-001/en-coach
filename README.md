@@ -210,7 +210,7 @@ flowchart LR
     I --> K[status line shows the tip]
 ```
 
-A few things that took real debugging to get right, all covered by the 111 offline tests:
+A few things that took real debugging to get right, all covered by the offline tests:
 
 - **Only your words get coached.** Code, stack traces, logs, diffs, and command
   lines are stripped line by line. Messages that the harness injects (background
@@ -242,11 +242,15 @@ Up to 400 characters of the prose in your message. Fenced code blocks, lines tha
 look like code, logs, commands or stack traces are filtered out first; the filter
 works line by line and is a best effort, so a line of code written like a
 sentence can still get through. Nothing else is sent: not your files, not
-Claude's replies. Things that look like secrets (API keys and tokens in common
-formats, `Bearer ...`, `password is ...`, `user:pass@` in URLs, assignments
-such as `API_KEY=...` or `db_password: ...`, private keys) are masked before
-sending and before logging. That too is a best effort, not a guarantee, so
-don't paste secrets into prompts.
+Claude's replies. Things that look like secrets are masked before sending and
+before logging: API keys and tokens in common formats, `Authorization: Basic /
+Bearer / Token ...`, `password is ...`, `user:pass@` in URLs, assignments such
+as `API_KEY=...`, `dbPassword: ...` or `PGPASSWORD=...` (the value needs a
+digit or 16+ characters), `curl -u` and `mysql -p` credentials, private keys.
+That too is a best effort, not a guarantee. Known gaps: UUID-shaped keys,
+64-character hex secrets, short base64 secrets, passwords made only of letters
+or containing spaces, URL passwords containing `/`, cookies. Don't paste
+secrets into prompts.
 
 **I don't speak Chinese. Is it useful?**
 FIX and REWRITE work for anyone writing English. For GAP and SAY, set

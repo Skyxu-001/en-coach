@@ -23,6 +23,7 @@ It never writes your API key anywhere.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime
@@ -60,7 +61,12 @@ def is_ours(command, script_name):
     """Exact match on our installed script, so a hook that merely contains the
     same file name (say ~/bin/open-coach.py) is never touched."""
     c = posix(str(command or "").strip().strip("'\""))     # a hand-written C:\... path too
-    return c.endswith(f"{INSTALL_DIR_NAME}/{script_name}")
+    tail = f"{INSTALL_DIR_NAME}/{script_name}"
+    if os.name == "nt":                                    # Windows paths ignore case
+        c, tail = c.lower(), tail.lower()
+    # The folder name must start right there: /opt/business-english-coach/en-coach.py
+    # is someone else's hook.
+    return re.search(r"(^|[/\s'\"])" + re.escape(tail) + "$", c) is not None
 
 
 def is_deepseek(url):
@@ -283,12 +289,16 @@ def main(argv=None):
     else:
         print("\nen-coach installed. Start a new Claude Code session to load the hook.")
     # The key may be exported in the shell or set in the "env" block of settings.json.
+    # Same test as the hook: null, empty and dotenvx "encrypted:..." values don't count.
     env = dict(os.environ)
     if isinstance(settings.get("env"), dict):
-        env.update({k: str(v) for k, v in settings["env"].items()})
-    base_url = env.get("EN_COACH_BASE_URL", "https://api.deepseek.com")
-    deepseek_key = env.get("DEEPSEEK_API_KEY") if is_deepseek(base_url) else None
-    if not (env.get("EN_COACH_API_KEY") or deepseek_key):
+        env.update({k: v for k, v in settings["env"].items() if isinstance(v, str)})
+
+    def usable(name):
+        v = (env.get(name) or "").strip()
+        return bool(v) and not v.startswith("encrypted:")
+    base_url = env.get("EN_COACH_BASE_URL") or "https://api.deepseek.com"
+    if not (usable("EN_COACH_API_KEY") or (is_deepseek(base_url) and usable("DEEPSEEK_API_KEY"))):
         print("\nOne more step: give it an API key. Either export it in your shell profile:\n"
               "    export DEEPSEEK_API_KEY=sk-...\n"
               "or add it to the \"env\" block of settings.json. See README > Configuration.")

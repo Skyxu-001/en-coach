@@ -172,12 +172,53 @@ class ExtractProse(unittest.TestCase):
         ]:
             self.assertEqual(self.keep(line), line, f"wrongly dropped: {line!r}")
 
+    def test_sentences_about_a_sql_statement_survive(self):
+        """Capital SQL followed by plain English is a question about the SQL.
+        The SQL rule dropped all of these whole."""
+        for line in [
+            "DROP TABLE is not allowed in production, how do I clean up old data?",
+            "INSERT INTO fails with a duplicate key error, what should I check?",
+            "UPDATE users SET is too slow on our big table, any ideas why?",
+            "SELECT * FROM orders is slow, should I add an index for this?",
+            "CREATE INDEX takes hours on that table, is that normal for you?",
+        ]:
+            self.assertEqual(self.keep("I have a quick question for you.\n" + line),
+                             "I have a quick question for you. " + line,
+                             f"wrongly dropped: {line!r}")
+
+    def test_inline_code_and_indented_backticks_are_not_fences(self):
+        """```git status``` on one line is inline code, and ``` indented by four
+        spaces is not a fence either (CommonMark). Both used to flip the fence
+        state, so every sentence after them was dropped."""
+        for text, expected in [
+            ("```git status``` shows nothing, why is that?\n"
+             "I also want to know why the build is so slow today.",
+             "```git status``` shows nothing, why is that? "
+             "I also want to know why the build is so slow today."),
+            ("Steps I tried in the first place:\n    ```\n"
+             "Then I restarted the machine and it started working again.",
+             "Steps I tried in the first place: "
+             "Then I restarted the machine and it started working again."),
+        ]:
+            self.assertEqual(self.keep(text), expected)
+
+    def test_a_fence_closes_only_with_a_bare_matching_line(self):
+        """A ~~~ line does not close a ``` fence, and ```python inside it is not a
+        closing line: the code after either one must stay out."""
+        text = ("Can you review this snippet for me please?\n```markdown\n~~~\n"
+                "the internal billing service reads its config at startup\n```python\n"
+                "the settlement job runs every night at two o'clock\n```\n"
+                "Is the wording clear enough for new people?")
+        self.assertEqual(self.keep(text), "Can you review this snippet for me please? "
+                                          "Is the wording clear enough for new people?")
+
     def test_log_cmd_rule_is_case_sensitive(self):
         """No re.I, and no inline (?-i:) either: that needs Python 3.11+ and an
         older interpreter would raise re.error that main() silently swallows."""
         import re
-        self.assertFalse(m.LOG_CMD_RE.flags & re.I)
-        self.assertNotIn("(?-i:", m.LOG_CMD_RE.pattern)
+        for rule in (m.LOG_CMD_RE, m.SQL_RE):
+            self.assertFalse(rule.flags & re.I)
+            self.assertNotIn("(?-i:", rule.pattern)
 
     def test_self_contamination(self):
         """Paste your screen and last turn's tip goes back to the model, which
@@ -310,6 +351,14 @@ class InjectedMessages(unittest.TestCase):
         got = self.gate(big + "\n" + mine)
         self.assertIsNotNone(got)
         self.assertIn(mine, got[0])
+
+    def test_many_unclosed_tags_are_quick(self):
+        """Each unclosed opening tag made the block regex scan to the end:
+        8000 of them took over 5 seconds of CPU per prompt."""
+        import time
+        t0 = time.perf_counter()
+        m.strip_injected("hi " + "<system-reminder>" * 8000)
+        self.assertLess(time.perf_counter() - t0, 1.0)
 
     def test_user_text_that_merely_mentions_tags_is_kept(self):
         for p in ("为什么 <task-notification> 会被当成我写的话去纠错呢",
@@ -706,6 +755,34 @@ class SelfCheck(unittest.TestCase):
         self.addCleanup(server.shutdown)
         return f"http://127.0.0.1:{server.server_address[1]}/v1"
 
+    def test_plugin_hook_command_end_to_end(self):
+        """The exact command from hooks/hooks.json, with a real payload on stdin,
+        down to the status file. run-python.sh once handed Python a here-doc
+        instead of the payload: every prompt was skipped, silently, while every
+        other test passed."""
+        import shutil
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("no bash")
+        url = self.serve(200, {"choices": [{"message": {
+            "content": "F|spelling|is failling|is failing"}}]})
+        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+        home, data = tempfile.mkdtemp(), tempfile.mkdtemp()
+        self.addCleanup(lambda: [shutil.rmtree(d, ignore_errors=True) for d in (home, data)])
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith("EN_COACH_") and k != "DEEPSEEK_API_KEY"}
+        env.update(HOME=home, USERPROFILE=home, CLAUDE_CONFIG_DIR=home,
+                   CLAUDE_PLUGIN_ROOT=ROOT.as_posix(), PYTHONDONTWRITEBYTECODE="1",
+                   EN_COACH_API_KEY="k", EN_COACH_BASE_URL=url, EN_COACH_DATA_DIR=data)
+        payload = {"prompt": "can you check why the build is failling on my laptop today",
+                   "session_id": "plugin-e2e", "cwd": home}
+        r = subprocess.run([bash, "-c", command], input=json.dumps(payload),
+                           capture_output=True, text=True, env=env, timeout=60)
+        status = pathlib.Path(data) / "status-plugin-e2e.txt"
+        self.assertTrue(status.exists(), r.stderr)
+        self.assertIn("is failing", status.read_text(encoding="utf-8"))
+
     def test_language_is_reported(self):
         r = self.run_check("http://127.0.0.1:9/v1", key=None, EN_COACH_NATIVE_LANGUAGE="ja")
         self.assertIn("Japanese (beta)".encode(), r.stdout)
@@ -886,6 +963,87 @@ class Redact(unittest.TestCase):
         }
         for raw, secret in cases.items():
             self.assertNotIn(secret, m.redact(raw), raw)
+
+    def test_secret_formats_from_the_second_review(self):
+        """Found by the second review, after the first round of fixes: all of
+        these still left the machine as typed. Built at run time, see above."""
+        def j(*parts):
+            return "".join(parts)
+        cases = {
+            j("I run PGPASS", "WORD=Hunter2024x psql and it hangs"): "Hunter2024x",
+            j('config has clientSec', 'ret: "Hunter2024xyz" in it'): "Hunter2024xyz",
+            j("password", "=hunter2 in my env file"): "hunter2",
+            j("The password is: ", "Hunter2024 but it fails"): "Hunter2024",
+            j("REDIS_URL is redis://:", "Hunter2024x@cache:6379/0"): "Hunter2024x",
+            j("I send Authorization: Basic ", "YWRtaW46SHVudGVy", "MjAyNA== and get 401"): "YWRtaW46",
+            j("I send Authorization: Token ", "9944b09199c62bcf", "9418ad846dd0e4bbdfc6ee4b"): "9944b091",
+            j("conn string AccountName=acct;Account", "Key", "=Ab3dE5", "gH7jK9", "mN1p",
+              "Q3sT5v", "W7y+Z1", "b3D5f7", "H9k1M3", "o5Q7s9", "U1w3Y5", "a7C9/x==",
+              ";EndpointSuffix=core"): "Ab3dE5gH7jK9",
+            j("I tried curl -u admin:", "Hunter2024x and got 401"): "Hunter2024x",
+            j("I ran mysql -u root -p", "Hunter2024x and it says denied"): "Hunter2024x",
+            j("machine github.com login sky pass", "word Hunter2024x"): "Hunter2024x",
+            j("密码是：", "Hunter2024x，帮我看看"): "Hunter2024x",
+            j("WiFi 密码 ", "Hunter2024x 你记一下"): "Hunter2024x",
+            j("-----BEGIN PGP PRIVATE ", "KEY BLOCK----- lQOYBF1abcdefghijklmnopqrs"): "lQOYBF1abcdef",
+        }
+        for raw, secret in cases.items():
+            self.assertNotIn(secret, m.redact(raw), raw)
+
+    def test_a_whole_private_key_is_masked_even_after_a_password_word(self):
+        """The 密钥： and "password is" rules ran first and masked only the
+        BEGIN line; the key body then matched nothing and was sent."""
+        import base64
+        import random
+        rng = random.Random(7)
+        body = base64.b64encode(bytes(rng.randrange(256) for _ in range(600))).decode()
+        chunks = [body[i:i + 64] for i in range(0, len(body), 64)]
+        pem = " ".join(["-----BEGIN RSA PRIV" + "ATE KEY-----", *chunks,
+                        "-----END RSA PRIV" + "ATE KEY-----"])
+        for lead in ("这是我的密钥：", "The key password is "):
+            out = m.redact(lead + pem + " why is it invalid?")
+            self.assertEqual([c for c in chunks if c[:16] in out], [], lead)
+
+    def test_a_bare_private_key_header_keeps_the_question(self):
+        """With no END line the rule ran to the end of the text."""
+        raw = ("My file starts with -----BEGIN RSA PRIV" + "ATE KEY----- but ssh says "
+               "invalid format, why does that happen?")
+        self.assertIn("but ssh says invalid format, why does that happen?", m.redact(raw))
+
+    def test_everyday_sentences_are_not_masked(self):
+        """The value must look like a secret: a digit, or 16+ characters; a
+        dash or ! alone no longer counts. And never on the next line."""
+        for raw in [
+            "The hot-key: Ctrl+Shift+P opens the palette.",
+            "The credentials: unavailable, so I gave up.",
+            "The password is case-sensitive, so be careful.",
+            "My password was rejected!",
+            "Why the password is wrong!? I typed it twice.",
+            "The password was auto-generated by the tool.",
+            "I cannot find the token:\nEverything else works fine though.",
+            "密码为 null 的时候会报错",
+        ]:
+            self.assertEqual(m.redact(raw), raw)
+
+    def test_the_line_filter_sees_the_text_before_masking(self):
+        """Masking first changed what the line filter saw: a mask ate the ```
+        line after "api_key:" and flipped the fence, so the code inside was sent
+        and your question after it was dropped; a mask swallowed the quote that
+        marks a config line, so the config line was coached as prose."""
+        got = m.gate({"prompt": "Here is how I load the api_key:\n```python\n"
+                                "# the billing team rotates this every month after the leak\n"
+                                "key = os.environ.get('X')\n```\n"
+                                "Why does this print None when I run it from cron?"})
+        self.assertIsNotNone(got)
+        self.assertIn("Why does this print None", got[0])
+        self.assertNotIn("billing team", got[0])
+        got = m.gate({"prompt": "Here is the doc section about the secret:\n```markdown\n"
+                                "The internal service reads its config from the vault at startup.\n"
+                                "```\nIs this wording clear enough?"})
+        self.assertNotIn("vault", got[0])
+        self.assertIn("Is this wording clear enough?", got[0])
+        self.assertIsNone(m.gate({"prompt": 'password = "hunter2hunter2"  '
+                                            "# please change this before we go to production"}))
 
     def test_everyday_words_next_to_a_colon_survive(self):
         for raw in [
@@ -1195,6 +1353,17 @@ class Installer(unittest.TestCase):
         self.run_installer("--uninstall")
         self.assertEqual(self.read(), theirs)
 
+    def test_a_folder_name_that_merely_ends_like_ours_is_not_ours(self):
+        """endswith("english-coach/en-coach.py") also matched
+        /opt/tools/business-english-coach/en-coach.py: uninstall deleted that hook."""
+        self.assertFalse(self.inst.is_ours("python3 /opt/tools/business-english-coach/en-coach.py",
+                                           "en-coach.py"))
+        self.assertTrue(self.inst.is_ours("python3 /home/a/.claude/english-coach/en-coach.py",
+                                          "en-coach.py"))
+        if os.name == "nt":                   # Windows paths ignore case
+            self.assertTrue(self.inst.is_ours(r"py C:\Users\a\.claude\English-Coach\en-coach.py",
+                                              "en-coach.py"))
+
     def test_settings_with_bom_are_read(self):
         self.settings.write_bytes(b"\xef\xbb\xbf" + json.dumps({"model": "opus"}).encode())
         self.assertEqual(self.run_installer(), 0)
@@ -1241,7 +1410,11 @@ class Installer(unittest.TestCase):
         saved = {k: os.environ.pop(k, None) for k in ("EN_COACH_API_KEY", "DEEPSEEK_API_KEY",
                                                       "EN_COACH_BASE_URL")}
         try:
-            for env, nagged in [({}, True), ({"DEEPSEEK_API_KEY": "sk-x"}, False)]:
+            # null and dotenvx "encrypted:..." values: the hook can't use them,
+            # so the installer must not say all is well.
+            for env, nagged in [({}, True), ({"DEEPSEEK_API_KEY": "sk-x"}, False),
+                                ({"EN_COACH_API_KEY": None}, True),
+                                ({"DEEPSEEK_API_KEY": "encrypted:BAx9"}, True)]:
                 self.settings.write_text(json.dumps({"env": env}), encoding="utf-8")
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
@@ -1375,6 +1548,11 @@ class Plugin(unittest.TestCase):
         r = subprocess.run([bash, str(script), "-c", "import sys; print(sys.version_info[0])"],
                            capture_output=True, text=True, timeout=60)
         self.assertEqual(r.stdout.strip(), "3", r.stderr)
+        # The hook's JSON arrives on stdin and must reach Python untouched. Python
+        # exec'd inside a here-doc loop once read the here-doc instead.
+        r = subprocess.run([bash, str(script), "-c", "import sys; print(sys.stdin.read())"],
+                           input='{"prompt": "hi"}', capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), '{"prompt": "hi"}', r.stderr)
 
     def test_python_finder_skips_a_broken_python(self):
         """A stale pyenv shim or an old python first on PATH was exec'd blindly:

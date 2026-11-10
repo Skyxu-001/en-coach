@@ -14,8 +14,12 @@ works() {
         xcode-select -p >/dev/null 2>&1 || return 1
       fi ;;
   esac
-  "$1" -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1
+  "$1" -c "import sys; sys.exit(sys.version_info < (3, 9))" </dev/null >/dev/null 2>&1
 }
+
+# The hook's JSON arrives on stdin. Keep it on fd 3: inside the read loop below
+# stdin is the here-doc, and exec'ing Python there handed it the here-doc instead.
+exec 3<&0
 
 store=""
 for name in python3 python py; do
@@ -24,13 +28,13 @@ for name in python3 python py; do
     [ -n "$path" ] || continue
     case "$path" in
       *WindowsApps*) [ -z "$store" ] && store=$path ;;
-      *) works "$path" && exec "$path" "$@" ;;
+      *) works "$path" && exec "$path" "$@" <&3 3<&- ;;
     esac
   done <<EOF
 $(type -ap "$name" 2>/dev/null)
 EOF
 done
 if [ -n "$store" ] && works "$store"; then
-  exec "$store" "$@"
+  exec "$store" "$@" <&3 3<&-
 fi
 exit 0   # no usable Python: stay silent like the hook itself
