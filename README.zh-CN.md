@@ -15,6 +15,8 @@
 
 **你平时怎么用 Claude Code 就怎么用，每条消息顺带变成一次英语练习。Claude 完全看不到。**
 
+▶️ **两分钟视频介绍：**[B 站（中文）](https://www.bilibili.com/video/BV1gQWm6jEBs) · [YouTube（英文）](https://youtu.be/tpCxBXJ9LZ4)
+
 你发出的每条消息，会被一个又快又便宜的小模型看一眼。大约一秒后，输入框下面出现一两行提示：
 英文写错的地方、中文里不会说的那个词的英文、或者"没错，但母语者会这么说"。
 

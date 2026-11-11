@@ -15,6 +15,8 @@
 
 **Practise English with the prompts you already type to Claude Code. Claude never sees the lessons.**
 
+▶️ **Watch the 2-minute intro:** [YouTube (English)](https://youtu.be/tpCxBXJ9LZ4) · [Bilibili (中文)](https://www.bilibili.com/video/BV1gQWm6jEBs)
+
 You keep working as usual. Each message you send gets a quick look from a small,
 cheap model, and a line or two of coaching appears under your prompt a second later:
 the grammar you got wrong, the English for the Chinese words you couldn't think of,
