@@ -287,3 +287,7 @@ Both are MIT; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 ## License
 
 [MIT](LICENSE)
+
+---
+
+If you find this project useful or interesting, a ⭐ helps others discover it. Thanks!

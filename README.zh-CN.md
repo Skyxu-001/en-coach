@@ -196,3 +196,7 @@ python3 -B tests/test_en_coach.py
 ## 许可证
 
 [MIT](LICENSE)
+
+---
+
+如果觉得这个项目有用或有意思，欢迎点个 ⭐，让更多人看到它。谢谢！
